@@ -85,6 +85,10 @@ local function AuctionatorReady()
 		and addon.API.v1.GetAuctionPriceByItemLink
 end
 
+local function ValidAuctionPrice(price)
+	return type(price) == "number" and price > 0 and not Secret(price)
+end
+
 local function getAuctionPrice(itemLink)
 	if not AuctionatorReady() or type(itemLink) ~= "string" then
 		return nil
@@ -94,7 +98,7 @@ local function getAuctionPrice(itemLink)
 		return nil
 	end
 	local ok, price = pcall(addon.API.v1.GetAuctionPriceByItemLink, CALLER_ID, itemLink)
-	if ok and type(price) == "number" and price > 0 and not Secret(price) then
+	if ok and ValidAuctionPrice(price) then
 		return price
 	end
 	return nil
@@ -324,6 +328,313 @@ local function isSoulboundTooltip(tooltip)
 	return false
 end
 
+local function StripTooltipCodes(text)
+	text = text:gsub("|c%x%x%x%x%x%x%x%x", "")
+	text = text:gsub("|r", "")
+	text = text:gsub("|H.-|h%[(.-)%]|h", "%1")
+	text = text:gsub("|H.-|h(.-)|h", "%1")
+	text = text:gsub("|T.-|t", "")
+	text = text:gsub("|n", " ")
+	text = text:gsub("%s+", " ")
+	return strtrim(text)
+end
+
+local function TooltipLeftTexts(tooltip)
+	local texts = {}
+	if not tooltip or (tooltip.IsForbidden and tooltip:IsForbidden()) then
+		return texts
+	end
+	local tooltipName = tooltip.GetName and tooltip:GetName()
+	if not tooltipName then
+		return texts
+	end
+	local n = tooltip.NumLines and tooltip:NumLines() or 0
+	for i = 1, n do
+		local line = _G[tooltipName .. "TextLeft" .. i]
+		local text = line and line.GetText and line:GetText()
+		if type(text) == "string" and text ~= "" and not Secret(text) then
+			texts[#texts + 1] = text
+		end
+	end
+	return texts
+end
+
+local function IsWaylaidCrateName(name)
+	return type(name) == "string" and name:find("Waylaid Crate", 1, true) and true or false
+end
+
+local function IsCrateFillStopLine(plain)
+	if plain == "" then
+		return false
+	end
+	if plain:find("^Requires ") or plain:find("^Item ?[Ll]evel") then
+		return true
+	end
+	if plain:find("^Sell Price") or plain:find("^ItemID") then
+		return true
+	end
+	if ITEM_SOULBOUND and plain == ITEM_SOULBOUND then
+		return true
+	end
+	if ITEM_BIND_ON_PICKUP and plain == ITEM_BIND_ON_PICKUP then
+		return true
+	end
+	if ITEM_BIND_QUEST and plain == ITEM_BIND_QUEST then
+		return true
+	end
+	return false
+end
+
+local fillLinkCache = {}
+
+local function RememberFillLink(name, link)
+	if type(name) == "string" and type(link) == "string" and not Secret(link) then
+		fillLinkCache[strlower(name)] = link
+	end
+	return link
+end
+
+local function ItemLinkFromID(itemID)
+	itemID = tonumber(itemID)
+	if not itemID or itemID < 1 then
+		return nil
+	end
+	local _, link = ItemInfo(itemID)
+	if type(link) == "string" and not Secret(link) then
+		return link
+	end
+	return "item:" .. itemID
+end
+
+local function ItemIDFromName(name)
+	if type(name) ~= "string" or name == "" then
+		return nil
+	end
+	if C_Item and C_Item.GetItemInfoInstant then
+		local ok, id = pcall(C_Item.GetItemInfoInstant, name)
+		id = tonumber(id)
+		if ok and id and id > 0 then
+			return id
+		end
+	end
+	if GetItemInfoInstant then
+		local ok, id = pcall(GetItemInfoInstant, name)
+		id = tonumber(id)
+		if ok and id and id > 0 then
+			return id
+		end
+	end
+	local _, link = ItemInfo(name)
+	if type(link) == "string" then
+		local id = tonumber(link:match("item:(%d+)"))
+		if id and id > 0 then
+			return id
+		end
+	end
+end
+
+local function ItemNameByID(itemID)
+	if C_Item and C_Item.GetItemNameByID then
+		local ok, itemName = pcall(C_Item.GetItemNameByID, itemID)
+		if ok and type(itemName) == "string" and itemName ~= "" and not Secret(itemName) then
+			return itemName
+		end
+	end
+	local itemName = ItemInfo(itemID)
+	if type(itemName) == "string" and itemName ~= "" then
+		return itemName
+	end
+end
+
+local function AuctionatorPriceDB()
+	local addon = AuctionatorAddon()
+	if addon and addon.Database and type(addon.Database.db) == "table" then
+		return addon.Database.db
+	end
+end
+
+local function FillMissingLinksFromAuctionator(missing)
+	if not missing or not next(missing) then
+		return
+	end
+	local db = AuctionatorPriceDB()
+	if type(db) ~= "table" then
+		return
+	end
+	local left = 0
+	for _ in pairs(missing) do
+		left = left + 1
+	end
+	for dbKey in pairs(db) do
+		local id = tonumber(dbKey)
+		if id then
+			local itemName = ItemNameByID(id)
+			if type(itemName) == "string" then
+				local bundle = missing[strlower(itemName)]
+				if bundle then
+					bundle.link = RememberFillLink(bundle.name, ItemLinkFromID(id))
+					missing[strlower(itemName)] = nil
+					left = left - 1
+					if left <= 0 then
+						return
+					end
+				end
+			end
+		end
+	end
+end
+
+local function LinkFromBags(name)
+	local getSlots = C_Container and C_Container.GetContainerNumSlots or GetContainerNumSlots
+	local getLink = C_Container and C_Container.GetContainerItemLink or GetContainerItemLink
+	if not getSlots or not getLink then
+		return
+	end
+	local lastBag = NUM_TOTAL_EQUIPPED_BAG_SLOTS or NUM_BAG_SLOTS or 4
+	for bag = 0, lastBag do
+		local slots = getSlots(bag) or 0
+		for slot = 1, slots do
+			local ok, link = pcall(getLink, bag, slot)
+			if ok and type(link) == "string" and not Secret(link) then
+				local itemName = ItemInfo(link)
+				if itemName == name then
+					return RememberFillLink(name, link)
+				end
+			end
+		end
+	end
+end
+
+local function FillItemLink(name, itemID)
+	if type(name) == "string" and fillLinkCache[strlower(name)] then
+		return fillLinkCache[strlower(name)]
+	end
+	if itemID then
+		local link = ItemLinkFromID(itemID)
+		if link then
+			return RememberFillLink(name, link)
+		end
+	end
+	if type(name) ~= "string" or name == "" then
+		return
+	end
+	local _, link = ItemInfo(name)
+	if type(link) == "string" and not Secret(link) then
+		return RememberFillLink(name, link)
+	end
+	local id = ItemIDFromName(name)
+	if id then
+		link = ItemLinkFromID(id)
+		if link then
+			return RememberFillLink(name, link)
+		end
+	end
+	if Item and Item.CreateFromItemName then
+		local ok, item = pcall(Item.CreateFromItemName, Item, name)
+		if ok and item and not (item.IsItemEmpty and item:IsItemEmpty()) then
+			if item.GetItemLink then
+				local itemLink = item:GetItemLink()
+				if type(itemLink) == "string" and not Secret(itemLink) then
+					return RememberFillLink(name, itemLink)
+				end
+			end
+			if item.GetItemID then
+				link = ItemLinkFromID(item:GetItemID())
+				if link then
+					return RememberFillLink(name, link)
+				end
+			end
+		end
+	end
+	return LinkFromBags(name)
+end
+
+local function ParseCrateFillBundles(blob)
+	local bundles = {}
+	if type(blob) ~= "string" or blob == "" then
+		return bundles
+	end
+	local s = blob
+	local listAt = s:lower():find("following list:")
+	if listAt then
+		s = s:sub(listAt):gsub("^[Ff]ollowing [Ll]ist:%s*", "")
+	end
+	for qty, name in s:gmatch("(%d+)%s*[xX]?%s+([^%d]+)") do
+		name = strtrim(name:gsub("%s+%-%s*$", ""))
+		qty = tonumber(qty)
+		if qty and qty > 0 and name ~= "" and not name:lower():find("fill the crate", 1, true) then
+			bundles[#bundles + 1] = {
+				qty = qty,
+				name = name,
+			}
+		end
+	end
+	return bundles
+end
+
+local function CrateFillBundles(tooltip)
+	local parts = {}
+	local capture = false
+	local ids = {}
+	for _, raw in ipairs(TooltipLeftTexts(tooltip)) do
+		local plain = StripTooltipCodes(raw)
+		if not capture then
+			local lower = plain:lower()
+			if lower:find("fill the crate", 1, true) or lower:find("following list", 1, true) then
+				capture = true
+				parts[#parts + 1] = plain
+			end
+		elseif IsCrateFillStopLine(plain) then
+			break
+		else
+			parts[#parts + 1] = plain
+		end
+		if capture then
+			for id in raw:gmatch("|Hitem:(%d+)") do
+				id = tonumber(id)
+				if id and id > 0 then
+					ids[#ids + 1] = id
+				end
+			end
+		end
+	end
+	local bundles = ParseCrateFillBundles(table.concat(parts, " "))
+	if #ids == #bundles then
+		for i, bundle in ipairs(bundles) do
+			bundle.itemID = ids[i] or bundle.itemID
+		end
+	end
+	return bundles
+end
+
+local function updateWaylaidCrateTooltip(tooltip)
+	local bundles = CrateFillBundles(tooltip)
+	if #bundles == 0 then
+		return false
+	end
+	local added = false
+	local missing = {}
+	for _, bundle in ipairs(bundles) do
+		bundle.link = FillItemLink(bundle.name, bundle.itemID)
+		if not bundle.link then
+			missing[strlower(bundle.name)] = bundle
+		end
+	end
+	FillMissingLinksFromAuctionator(missing)
+	for _, bundle in ipairs(bundles) do
+		local unit = bundle.link and getAuctionPrice(bundle.link) or nil
+		local label = bundle.qty .. "x " .. bundle.name .. ": "
+		if unit then
+			tooltip:AddLine(label .. formatGold(bundle.qty * unit))
+			added = true
+		elseif options.showNoAuctionData then
+			tooltip:AddLine(label .. "No Auction Data", 1, 0, 1)
+			added = true
+		end
+	end
+	return added
+end
+
 local function GetLinkFromTooltip(tooltip, data)
 	if data then
 		if type(data.hyperlink) == "string" and not Secret(data.hyperlink) then
@@ -354,11 +665,21 @@ local function updateTooltip(tooltip, itemLink)
 	if tooltip.AuctionworthyAdded then
 		return
 	end
+
+	local name, _, _, _, _, _, _, stackSize, _, _, vendorPrice, _, _, bindType = ItemInfo(itemLink)
+	local title = TooltipLeftTexts(tooltip)[1]
+	if IsWaylaidCrateName(name) or IsWaylaidCrateName(title and StripTooltipCodes(title)) then
+		if updateWaylaidCrateTooltip(tooltip) then
+			tooltip.AuctionworthyAdded = true
+			tooltip:Show()
+		end
+		return
+	end
+
 	if isSoulboundTooltip(tooltip) then
 		return
 	end
 
-	local _, _, _, _, _, _, _, stackSize, _, _, vendorPrice, _, _, bindType = ItemInfo(itemLink)
 	if Secret(vendorPrice) or Secret(stackSize) or Secret(bindType) then
 		return
 	end
