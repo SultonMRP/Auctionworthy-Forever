@@ -19,6 +19,8 @@ local defaultOptions = {
 	showNoAuctionData = true,
 	showFullStack = true,
 	showDecisionText = true,
+	applyUndercut = true,
+	showUndercut = true,
 }
 
 local options = {}
@@ -57,22 +59,258 @@ local function formatGold(value)
 	return gold .. "g " .. silver .. "s " .. copper .. "c"
 end
 
+-- Other-addon globals / SVs may be missing (Auctionator off, or first run before Auctionator.lua exists).
+local function SafeGlobal(name)
+	if type(name) ~= "string" or type(_G) ~= "table" then
+		return nil
+	end
+	local ok, value = pcall(rawget, _G, name)
+	if ok then
+		return value
+	end
+end
+
+local function AuctionatorAddon()
+	local addon = SafeGlobal("Auctionator")
+	if type(addon) == "table" then
+		return addon
+	end
+end
+
 local function AuctionatorReady()
-	return Auctionator
-		and Auctionator.API
-		and Auctionator.API.v1
-		and Auctionator.API.v1.GetAuctionPriceByItemLink
+	local addon = AuctionatorAddon()
+	return addon
+		and addon.API
+		and addon.API.v1
+		and addon.API.v1.GetAuctionPriceByItemLink
 end
 
 local function getAuctionPrice(itemLink)
 	if not AuctionatorReady() or type(itemLink) ~= "string" then
 		return nil
 	end
-	local ok, price = pcall(Auctionator.API.v1.GetAuctionPriceByItemLink, CALLER_ID, itemLink)
+	local addon = AuctionatorAddon()
+	if not addon then
+		return nil
+	end
+	local ok, price = pcall(addon.API.v1.GetAuctionPriceByItemLink, CALLER_ID, itemLink)
 	if ok and type(price) == "number" and price > 0 and not Secret(price) then
 		return price
 	end
 	return nil
+end
+
+-- Read-only copies from Auctionator.lua (AUCTIONATOR_CONFIG) / per-character
+-- (AUCTIONATOR_CHARACTER_CONFIG). Never write those tables or call Config.Set.
+local function CopyConfigValue(value)
+	local t = type(value)
+	if value == nil or Secret(value) then
+		return nil
+	end
+	if t == "number" or t == "string" or t == "boolean" then
+		return value
+	end
+end
+
+local function ReadSavedKey(tbl, key)
+	if type(tbl) ~= "table" or type(key) ~= "string" then
+		return nil
+	end
+	local ok, value = pcall(function()
+		return tbl[key]
+	end)
+	if ok then
+		return CopyConfigValue(value)
+	end
+end
+
+local function AuctionatorConfigValue(key)
+	if type(key) ~= "string" then
+		return nil
+	end
+	local addon = AuctionatorAddon()
+	if addon and addon.Config and type(addon.Config.Get) == "function" then
+		local ok, value = pcall(addon.Config.Get, key)
+		if ok then
+			value = CopyConfigValue(value)
+			if value ~= nil then
+				return value
+			end
+		end
+	end
+	local fromChar = ReadSavedKey(SafeGlobal("AUCTIONATOR_CHARACTER_CONFIG"), key)
+	if fromChar ~= nil then
+		return fromChar
+	end
+	return ReadSavedKey(SafeGlobal("AUCTIONATOR_CONFIG"), key)
+end
+
+local function formatUndercutCopper(copper)
+	copper = math.floor(math.abs(tonumber(copper) or 0))
+	local gold = math.floor(copper / 10000)
+	local silver = math.floor((copper % 10000) / 100)
+	local c = copper % 100
+	local parts = {}
+	if gold > 0 then
+		parts[#parts + 1] = gold .. "g"
+	end
+	if silver > 0 then
+		parts[#parts + 1] = silver .. "s"
+	end
+	if c > 0 or #parts == 0 then
+		parts[#parts + 1] = c .. "c"
+	end
+	return table.concat(parts, ", ")
+end
+
+-- In-memory copy only. Never written back to Auctionator.lua.
+local undercutSnap = {
+	loaded = false,
+	source = nil,
+	preference = nil,
+	percentage = nil,
+	staticValue = nil,
+}
+
+local function AuctionatorLuaPresent()
+	return type(SafeGlobal("AUCTIONATOR_CONFIG")) == "table"
+		or type(SafeGlobal("AUCTIONATOR_CHARACTER_CONFIG")) == "table"
+end
+
+local function RefreshAuctionatorConfig(announce)
+	undercutSnap.loaded = false
+	undercutSnap.source = nil
+	undercutSnap.preference = nil
+	undercutSnap.percentage = nil
+	undercutSnap.staticValue = nil
+
+	if type(SafeGlobal("AUCTIONATOR_CHARACTER_CONFIG")) == "table" then
+		undercutSnap.source = "character"
+	elseif type(SafeGlobal("AUCTIONATOR_CONFIG")) == "table" then
+		undercutSnap.source = "account"
+	elseif AuctionatorAddon() then
+		undercutSnap.source = "api"
+	end
+
+	local pref = AuctionatorConfigValue("auction_sales_preference")
+	local pct = tonumber(AuctionatorConfigValue("undercut_percentage"))
+	local static = tonumber(AuctionatorConfigValue("undercut_static_value"))
+	if pref ~= nil or pct ~= nil or static ~= nil then
+		undercutSnap.loaded = true
+		undercutSnap.preference = pref
+		undercutSnap.percentage = pct
+		undercutSnap.staticValue = static
+	end
+
+	if announce then
+		local prefix = "|cff00ff00Auctionworthy-Forever:|r "
+		if not AuctionatorLuaPresent() and not AuctionatorReady() then
+			print(prefix .. "Auctionator.lua not loaded yet. Enable Auctionator, then /worthy refresh.")
+			return undercutSnap
+		end
+		if not undercutSnap.loaded then
+			print(prefix .. "Auctionator.lua is loaded, but undercut settings were empty.")
+			return undercutSnap
+		end
+		local src = "account"
+		if undercutSnap.source == "character" then
+			src = "character profile"
+		elseif undercutSnap.source == "api" then
+			src = "Auctionator API"
+		end
+		if undercutSnap.preference == "static" then
+			print(prefix .. "Refreshed (" .. src .. "). Undercut: " .. formatUndercutCopper(undercutSnap.staticValue or 0))
+		elseif undercutSnap.preference == "percentage" then
+			print(prefix .. "Refreshed (" .. src .. "). Undercut: " .. (undercutSnap.percentage or 0) .. "%")
+		else
+			print(prefix .. "Refreshed (" .. src .. ").")
+		end
+	end
+	return undercutSnap
+end
+
+local function UndercutSettings()
+	if undercutSnap.loaded then
+		return undercutSnap.preference, undercutSnap.percentage, undercutSnap.staticValue
+	end
+	return AuctionatorConfigValue("auction_sales_preference"),
+		tonumber(AuctionatorConfigValue("undercut_percentage")),
+		tonumber(AuctionatorConfigValue("undercut_static_value"))
+end
+
+-- Copper cheaper than the AH price: percent of AH, or the fixed copper value.
+local function UndercutByCopper(marketUnit, stackCount)
+	local pref, pct, static = UndercutSettings()
+	stackCount = tonumber(stackCount) or 1
+	if stackCount < 1 then
+		stackCount = 1
+	end
+	local perItem = 0
+	if pref == "static" then
+		perItem = tonumber(static) or 0
+	elseif pref == "percentage" and type(marketUnit) == "number" and marketUnit > 0 then
+		perItem = math.floor(marketUnit * (tonumber(pct) or 0) / 100)
+	else
+		return 0, pref, pct, static
+	end
+	if perItem < 0 then
+		perItem = 0
+	end
+	if type(marketUnit) == "number" and marketUnit > 1 then
+		local maxCut = math.floor(marketUnit) - 1
+		if perItem > maxCut then
+			perItem = maxCut
+		end
+	end
+	return math.floor(perItem * stackCount), pref, pct, static
+end
+
+local function ComputePosting(unitPrice)
+	if type(unitPrice) ~= "number" then
+		return unitPrice
+	end
+	local taken = UndercutByCopper(unitPrice, 1)
+	local posting = math.floor(unitPrice) - (taken or 0)
+	if posting < 1 then
+		posting = 1
+	end
+	return posting
+end
+
+-- Undercut 1%, 10s  /  Undercut 1c, 1c   (setting, how much cheaper you'll be)
+local function undercutLine(marketUnit, stackCount)
+	local ok, line = pcall(function()
+		local taken, pref, pct, static = UndercutByCopper(marketUnit, stackCount)
+		local setting
+		if pref == "static" then
+			setting = formatUndercutCopper(static)
+			if (not taken or taken == 0) and static then
+				taken = tonumber(static) or 0
+				local n = tonumber(stackCount) or 1
+				if n > 1 then
+					taken = taken * n
+				end
+			end
+			return "Undercut " .. setting .. ", " .. formatUndercutCopper(taken or 0)
+		end
+		if pref == "percentage" then
+			setting = (pct or 0) .. "%"
+			if type(marketUnit) == "number" and marketUnit > 0 then
+				return "Undercut " .. setting .. ", " .. formatUndercutCopper(taken or 0)
+			end
+			return "Undercut " .. setting
+		end
+	end)
+	if ok then
+		return line
+	end
+end
+
+local function applyUndercut(unitPrice)
+	if not options.applyUndercut then
+		return unitPrice
+	end
+	return ComputePosting(unitPrice)
 end
 
 -- Classic-style "what it costs to auction vs vendor": deposit-ish + listing overhead.
@@ -154,14 +392,19 @@ local function updateTooltip(tooltip, itemLink)
 		return
 	end
 
-	local auctionPrice = getAuctionPrice(itemLink)
+	local marketUnit = getAuctionPrice(itemLink)
+	local auctionPrice = applyUndercut(marketUnit)
+	local marketPrice = marketUnit
 	stackSize = stackSize or 1
 
 	local isFullStack = IsShiftKeyDown() and stackSize > 1 and options.showFullStack
 	local auctionCosts = calculateAuctionCosts(vendorPrice)
+	local stackMult = 1
 
 	if isFullStack then
+		stackMult = stackSize
 		auctionCosts = auctionCosts * stackSize
+		marketPrice = marketPrice and marketPrice * stackSize or nil
 		auctionPrice = auctionPrice and auctionPrice * stackSize or nil
 		vendorPrice = vendorPrice * stackSize
 		tooltip:AddLine("|cFFFFA500Calculations for Full Stack (" .. stackSize .. "x)|r")
@@ -196,6 +439,13 @@ local function updateTooltip(tooltip, itemLink)
 		end
 	elseif options.showNoAuctionData then
 		tooltip:AddLine("No Auction Data", 1, 0, 1)
+	end
+
+	if options.showUndercut then
+		local line = undercutLine(marketUnit, stackMult)
+		if line then
+			tooltip:AddLine(line, 0.65, 0.85, 1)
+		end
 	end
 
 	tooltip.AuctionworthyAdded = true
@@ -277,24 +527,69 @@ local function InstallHooks()
 	end
 end
 
-StaticPopupDialogs["AUCTIONWORTHY_MISSING_AUCTIONATOR"] = StaticPopupDialogs["AUCTIONWORTHY_MISSING_AUCTIONATOR"] or {
-	text = "Auctionator is required for Auctionworthy-Forever. Install Auctionator and /reload.",
-	button1 = OKAY or "Okay",
-	timeout = 0,
-	whileDead = true,
-	hideOnEscape = true,
-}
+local hookedOptionsFrames = {}
+local lastOptionsRefresh = 0
 
-function Auctionworthy:ADDON_LOADED(name)
-	if name ~= ADDON_NAME then
-		return
+local function OnAuctionatorOptionsClosed()
+	local function run()
+		local now = GetTime and GetTime() or 0
+		if now - lastOptionsRefresh < 0.25 then
+			return
+		end
+		lastOptionsRefresh = now
+		-- After Auctionator's own OnHide Save() so we copy the new undercut.
+		RefreshAuctionatorConfig(false)
 	end
-	LoadOptions()
-	InstallHooks()
-	if not AuctionatorReady() then
-		StaticPopup_Show("AUCTIONWORTHY_MISSING_AUCTIONATOR")
+	if C_Timer and C_Timer.After then
+		C_Timer.After(0, run)
+	else
+		run()
 	end
 end
+
+local function HookAuctionatorOptionsClose()
+	local names = {
+		"SettingsPanel",
+		"InterfaceOptionsFrame",
+		"AuctionatorConfigSellingAllItemsFrame",
+		"AuctionatorConfigSellingFrame",
+	}
+	for _, name in ipairs(names) do
+		if not hookedOptionsFrames[name] then
+			local frame = SafeGlobal(name)
+			if type(frame) == "table" and frame.HookScript then
+				local ok = pcall(frame.HookScript, frame, "OnHide", OnAuctionatorOptionsClosed)
+				if ok then
+					hookedOptionsFrames[name] = true
+				end
+			end
+		end
+	end
+end
+
+function Auctionworthy:ADDON_LOADED(name)
+	if name == ADDON_NAME then
+		LoadOptions()
+		InstallHooks()
+		HookAuctionatorOptionsClose()
+		RefreshAuctionatorConfig(false)
+		return
+	end
+	if name == "Auctionator" then
+		HookAuctionatorOptionsClose()
+		RefreshAuctionatorConfig(false)
+	end
+end
+
+function Auctionworthy:PLAYER_ENTERING_WORLD()
+	self:UnregisterEvent("PLAYER_ENTERING_WORLD")
+	HookAuctionatorOptionsClose()
+	RefreshAuctionatorConfig(false)
+	if not AuctionatorReady() then
+		print("|cffff7f00Auctionworthy-Forever:|r Auctionator is off. Prices stay empty until you enable it. /worthy refresh after it loads.")
+	end
+end
+Auctionworthy:RegisterEvent("PLAYER_ENTERING_WORLD")
 
 local function openOptionsPanel()
 	if AuctionworthyOptionsFrame then
@@ -304,7 +599,7 @@ local function openOptionsPanel()
 
 	local template = BackdropTemplateMixin and "BackdropTemplate" or nil
 	local frame = CreateFrame("Frame", "AuctionworthyOptionsFrame", UIParent, template)
-	frame:SetSize(400, 350)
+	frame:SetSize(400, 410)
 	frame:SetPoint("CENTER")
 	frame:SetFrameStrata("DIALOG")
 	frame:SetClampedToScreen(true)
@@ -332,7 +627,7 @@ local function openOptionsPanel()
 	info:SetPoint("TOPLEFT", 20, -40)
 	info:SetJustifyH("LEFT")
 	info:SetWidth(360)
-	info:SetText("Tooltip lines from Auctionator prices. Shift shows a full stack when that option is on.")
+	info:SetText("Tooltip lines from Auctionator prices. Shift shows a full stack when that option is on. /worthy refresh re-reads Auctionator settings.")
 
 	local checkboxes = {
 		{ label = "Show Auction Costs", key = "showAuctionCosts" },
@@ -341,6 +636,8 @@ local function openOptionsPanel()
 		{ label = "Show No Auction Data", key = "showNoAuctionData" },
 		{ label = "Show Full Stack Calculations", key = "showFullStack" },
 		{ label = "Show Decision Text", key = "showDecisionText" },
+		{ label = "Apply Auctionator undercut", key = "applyUndercut" },
+		{ label = "Show Undercut", key = "showUndercut" },
 	}
 
 	local yOffset = -100
@@ -371,4 +668,16 @@ end
 
 SLASH_AUCTIONWORTHY1 = "/auctionworthy"
 SLASH_AUCTIONWORTHY2 = "/worthy"
-SlashCmdList["AUCTIONWORTHY"] = openOptionsPanel
+SlashCmdList["AUCTIONWORTHY"] = function(msg)
+	msg = strlower(strtrim(tostring(msg or "")))
+	if msg == "refresh" or msg == "reload" then
+		RefreshAuctionatorConfig(true)
+		return
+	end
+	if msg == "help" then
+		print("|cff00ff00Auctionworthy-Forever:|r /worthy — options")
+		print("  /worthy refresh — re-read Auctionator undercut (no /reload)")
+		return
+	end
+	openOptionsPanel()
+end
