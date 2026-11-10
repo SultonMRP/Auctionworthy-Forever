@@ -277,28 +277,19 @@ local function ComputePosting(unitPrice)
 	return posting
 end
 
--- Undercut 1%, 10s  /  Undercut 1c, 1c   (setting, how much cheaper you'll be)
+-- Static: Undercut 1c. Percent: Undercut 1%, 10s (AH * pct).
 local function undercutLine(marketUnit, stackCount)
 	local ok, line = pcall(function()
 		local taken, pref, pct, static = UndercutByCopper(marketUnit, stackCount)
-		local setting
 		if pref == "static" then
-			setting = formatUndercutCopper(static)
-			if (not taken or taken == 0) and static then
-				taken = tonumber(static) or 0
-				local n = tonumber(stackCount) or 1
-				if n > 1 then
-					taken = taken * n
-				end
-			end
-			return "Undercut " .. setting .. ", " .. formatUndercutCopper(taken or 0)
+			return "Undercut: " .. formatUndercutCopper(static)
 		end
 		if pref == "percentage" then
-			setting = (pct or 0) .. "%"
+			local setting = (pct or 0) .. "%"
 			if type(marketUnit) == "number" and marketUnit > 0 then
-				return "Undercut " .. setting .. ", " .. formatUndercutCopper(taken or 0)
+				return "Undercut: " .. setting .. ", " .. formatUndercutCopper(taken or 0)
 			end
-			return "Undercut " .. setting
+			return "Undercut: " .. setting
 		end
 	end)
 	if ok then
