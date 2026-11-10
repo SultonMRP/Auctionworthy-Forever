@@ -2,9 +2,9 @@
 ## Title: Auctionworthy-Forever
 ## Notes: Tooltip profit vs vendor using Auctionator prices. /auctionworthy or /worthy
 ## Author: spzilyk
-## Version: 1.1.15
+## Version: 1.1.31
 ## OptionalDeps: Auctionator
-## SavedVariables: AuctionworthySavedOptions
+## SavedVariables: AuctionworthySavedOptions, AuctionworthyFillIDs
 ## IconTexture: Interface\Icons\INV_Misc_Coin_01
 ## Category-enUS: Auctions
 ## AllowLoadGameType: camelot, mainline

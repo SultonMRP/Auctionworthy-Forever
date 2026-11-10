@@ -21,6 +21,7 @@ local defaultOptions = {
 	showDecisionText = true,
 	applyUndercut = true,
 	showUndercut = true,
+	worthyScanAt = 0,
 }
 
 local options = {}
@@ -43,6 +44,46 @@ end
 
 local function SaveOptions()
 	AuctionworthySavedOptions = options
+end
+
+local fillIDs = {}
+
+local function LoadFillIDs()
+	local saved = AuctionworthyFillIDs
+	fillIDs = {}
+	if type(saved) == "table" then
+		for name, itemID in pairs(saved) do
+			itemID = tonumber(itemID)
+			if type(name) == "string" and itemID and itemID > 0 then
+				fillIDs[strlower(name)] = itemID
+			end
+		end
+	end
+	AuctionworthyFillIDs = fillIDs
+end
+
+local function FillNameKey(name)
+	return strlower(strtrim(name))
+end
+
+local function ItemIDFromLink(link)
+	if type(link) ~= "string" or Secret(link) then
+		return nil
+	end
+	local id = tonumber(link:match("item:(%d+)"))
+	if id and id > 0 then
+		return id
+	end
+end
+
+local function CacheFillID(name, itemID)
+	itemID = tonumber(itemID)
+	if type(name) ~= "string" or name == "" or not itemID or itemID < 1 then
+		return itemID
+	end
+	fillIDs[FillNameKey(name)] = itemID
+	AuctionworthyFillIDs = fillIDs
+	return itemID
 end
 
 local function formatGold(value)
@@ -102,6 +143,41 @@ local function getAuctionPrice(itemLink)
 		return price
 	end
 	return nil
+end
+
+local function getAuctionPriceByItemID(itemID)
+	itemID = tonumber(itemID)
+	if not AuctionatorReady() or not itemID or itemID < 1 then
+		return nil
+	end
+	local addon = AuctionatorAddon()
+	if not addon or not addon.API.v1.GetAuctionPriceByItemID then
+		return nil
+	end
+	local ok, price = pcall(addon.API.v1.GetAuctionPriceByItemID, CALLER_ID, itemID)
+	if ok and ValidAuctionPrice(price) then
+		return price
+	end
+	local db = addon.Database and addon.Database.db
+	if type(db) == "table" then
+		local row = db[tostring(itemID)] or db[itemID]
+		if type(row) == "table" and ValidAuctionPrice(row.m) then
+			return row.m
+		end
+	end
+	return nil
+end
+
+local function getFillAuctionPrice(link, itemID)
+	itemID = tonumber(itemID)
+	if not itemID and type(link) == "string" then
+		itemID = tonumber(link:match("item:(%d+)"))
+	end
+	local price = getAuctionPriceByItemID(itemID)
+	if price then
+		return price
+	end
+	return link and getAuctionPrice(link) or nil
 end
 
 -- Read-only copies from Auctionator.lua (AUCTIONATOR_CONFIG) / per-character
@@ -370,6 +446,9 @@ local function IsCrateFillStopLine(plain)
 	if plain:find("^Requires ") or plain:find("^Item ?[Ll]evel") then
 		return true
 	end
+	if plain:find("^%d+x .+%: ") then
+		return true
+	end
 	if plain:find("^Sell Price") or plain:find("^ItemID") then
 		return true
 	end
@@ -385,11 +464,10 @@ local function IsCrateFillStopLine(plain)
 	return false
 end
 
-local fillLinkCache = {}
-
 local function RememberFillLink(name, link)
-	if type(name) == "string" and type(link) == "string" and not Secret(link) then
-		fillLinkCache[strlower(name)] = link
+	if type(link) == "string" and not Secret(link) then
+		CacheFillID(name, ItemIDFromLink(link))
+		return link
 	end
 	return link
 end
@@ -433,54 +511,237 @@ local function ItemIDFromName(name)
 	end
 end
 
-local function ItemNameByID(itemID)
-	if C_Item and C_Item.GetItemNameByID then
-		local ok, itemName = pcall(C_Item.GetItemNameByID, itemID)
-		if ok and type(itemName) == "string" and itemName ~= "" and not Secret(itemName) then
-			return itemName
+local function CachedFillID(name)
+	if type(name) ~= "string" or name == "" then
+		return
+	end
+	local key = FillNameKey(name)
+	local id = tonumber(fillIDs[key])
+	if not id or id < 1 then
+		return
+	end
+	return id
+end
+
+local FILL_NAME_IDS = {
+	["dream dust"] = 11176,
+	["lesser nether essence"] = 11174,
+	["greater nether essence"] = 11175,
+	["small radiant shard"] = 11177,
+	["large radiant shard"] = 11178,
+	["small brilliant shard"] = 14343,
+	["large brilliant shard"] = 14344,
+	["illusion dust"] = 16204,
+	["lesser eternal essence"] = 16202,
+	["greater eternal essence"] = 16203,
+	["cured light hide"] = 4236,
+	["bolt of linen cloth"] = 2996,
+	["thorium widget"] = 15994,
+	["truesilver transformer"] = 18631,
+	["thorium tube"] = 16000,
+}
+
+local function KnownFillID(name)
+	if type(name) ~= "string" then
+		return
+	end
+	return FILL_NAME_IDS[FillNameKey(name)]
+end
+
+local function ScanRowNameAndID(row)
+	if type(row) ~= "table" then
+		return
+	end
+	local info = row.replicateInfo or row.auctionInfo
+	local name, itemID
+	if type(info) == "table" then
+		if type(info[1]) == "string" and not Secret(info[1]) then
+			name = info[1]
+		end
+		itemID = tonumber(info[17])
+	end
+	if type(row.itemName) == "string" and not Secret(row.itemName) then
+		name = name or row.itemName
+	end
+	if type(row.itemKey) == "table" then
+		itemID = itemID or tonumber(row.itemKey.itemID)
+	end
+	itemID = itemID or ItemIDFromLink(row.itemLink)
+	if (not name or name == "") and type(row.itemLink) == "string" then
+		local itemName = ItemInfo(row.itemLink)
+		if type(itemName) == "string" then
+			name = itemName
 		end
 	end
-	local itemName = ItemInfo(itemID)
-	if type(itemName) == "string" and itemName ~= "" then
-		return itemName
-	end
-end
-
-local function AuctionatorPriceDB()
-	local addon = AuctionatorAddon()
-	if addon and addon.Database and type(addon.Database.db) == "table" then
-		return addon.Database.db
-	end
-end
-
-local function FillMissingLinksFromAuctionator(missing)
-	if not missing or not next(missing) then
-		return
-	end
-	local db = AuctionatorPriceDB()
-	if type(db) ~= "table" then
-		return
-	end
-	local left = 0
-	for _ in pairs(missing) do
-		left = left + 1
-	end
-	for dbKey in pairs(db) do
-		local id = tonumber(dbKey)
-		if id then
-			local itemName = ItemNameByID(id)
-			if type(itemName) == "string" then
-				local bundle = missing[strlower(itemName)]
-				if bundle then
-					bundle.link = RememberFillLink(bundle.name, ItemLinkFromID(id))
-					missing[strlower(itemName)] = nil
-					left = left - 1
-					if left <= 0 then
-						return
-					end
-				end
+	if (not name or name == "") and itemID then
+		if C_Item and C_Item.GetItemNameByID then
+			local ok, itemName = pcall(C_Item.GetItemNameByID, itemID)
+			if ok and type(itemName) == "string" then
+				name = itemName
 			end
 		end
+		if (not name or name == "") then
+			local itemName = ItemInfo(itemID)
+			if type(itemName) == "string" then
+				name = itemName
+			end
+		end
+	end
+	if type(name) == "string" then
+		name = strtrim(name)
+	end
+	if type(name) == "string" and name ~= "" and itemID and itemID > 0 then
+		return name, itemID
+	end
+end
+
+local worthyScan = {
+	inProgress = false,
+	processing = false,
+	mode = nil,
+	button = nil,
+	index = 0,
+	total = 0,
+	stored = 0,
+}
+local FinishWorthyScan
+local RestoreDefaultScanButtons
+local SetWorthyScanButtonEnabled
+local WorthyPrint
+
+local fillIndexTicker
+local function IndexScanData(scanData, onDone)
+	if type(scanData) ~= "table" then
+		return
+	end
+	local rows = {}
+	for _, row in ipairs(scanData) do
+		rows[#rows + 1] = row
+	end
+	if #rows == 0 then
+		if onDone then
+			onDone()
+		end
+		return
+	end
+	if fillIndexTicker then
+		fillIndexTicker:Cancel()
+		fillIndexTicker = nil
+	end
+	local function take(row)
+		local name, itemID = ScanRowNameAndID(row)
+		if name and itemID then
+			CacheFillID(name, itemID)
+			if worthyScan and worthyScan.inProgress then
+				worthyScan.stored = (worthyScan.stored or 0) + 1
+			end
+		end
+	end
+	if not C_Timer or not C_Timer.NewTicker then
+		for _, row in ipairs(rows) do
+			take(row)
+		end
+		AuctionworthyFillIDs = fillIDs
+		if onDone then
+			onDone()
+		end
+		return
+	end
+	local i = 1
+	fillIndexTicker = C_Timer.NewTicker(0, function()
+		local stop = math.min(i + 400, #rows)
+		for j = i, stop do
+			take(rows[j])
+		end
+		i = stop + 1
+		if i > #rows then
+			fillIndexTicker:Cancel()
+			fillIndexTicker = nil
+			AuctionworthyFillIDs = fillIDs
+			if onDone then
+				onDone()
+			end
+		end
+	end)
+end
+
+local auctionatorBusy = false
+local SyncScanButtons
+
+local scanHooked
+local function HookAuctionatorScan()
+	if scanHooked then
+		return
+	end
+	local addon = AuctionatorAddon()
+	if not addon or not addon.EventBus or type(addon.EventBus.Register) ~= "function" then
+		return
+	end
+	local kind = {}
+	local events = {}
+	local function addGroup(group)
+		if not group or not group.Events then
+			return
+		end
+		if group.Events.ScanStart then
+			kind[group.Events.ScanStart] = "start"
+			events[#events + 1] = group.Events.ScanStart
+		end
+		if group.Events.ScanProgress then
+			kind[group.Events.ScanProgress] = "progress"
+			events[#events + 1] = group.Events.ScanProgress
+		end
+		if group.Events.ScanComplete then
+			kind[group.Events.ScanComplete] = "done"
+			events[#events + 1] = group.Events.ScanComplete
+		end
+		if group.Events.ScanFailed then
+			kind[group.Events.ScanFailed] = "fail"
+			events[#events + 1] = group.Events.ScanFailed
+		end
+	end
+	addGroup(addon.FullScan)
+	addGroup(addon.IncrementalScan)
+	if #events == 0 then
+		return
+	end
+	local listener = {
+		ReceiveEvent = function(_, event, data)
+			local what = kind[event]
+			if what == "start" then
+				auctionatorBusy = true
+			elseif what == "progress" then
+				if worthyScan.inProgress then
+					local pct = math.floor((tonumber(data) or 0) * 100 + 0.5)
+					SetWorthyScanButtonEnabled(false, "Scan " .. pct .. "%")
+				end
+				return
+			elseif what == "fail" then
+				auctionatorBusy = false
+				if worthyScan.inProgress then
+					worthyScan.inProgress = false
+					worthyScan.processing = false
+					worthyScan.mode = nil
+					RestoreDefaultScanButtons()
+					WorthyPrint("Auctionator Full Scan failed.")
+					return
+				end
+			elseif what == "done" then
+				auctionatorBusy = false
+				if worthyScan.inProgress then
+					IndexScanData(data, FinishWorthyScan)
+					return
+				end
+				IndexScanData(data)
+			end
+			if SyncScanButtons then
+				SyncScanButtons()
+			end
+		end,
+	}
+	local ok = pcall(addon.EventBus.Register, addon.EventBus, listener, events)
+	if ok then
+		scanHooked = true
 	end
 end
 
@@ -506,14 +767,10 @@ local function LinkFromBags(name)
 end
 
 local function FillItemLink(name, itemID)
-	if type(name) == "string" and fillLinkCache[strlower(name)] then
-		return fillLinkCache[strlower(name)]
-	end
-	if itemID then
-		local link = ItemLinkFromID(itemID)
-		if link then
-			return RememberFillLink(name, link)
-		end
+	local id = tonumber(itemID) or CachedFillID(name)
+	if id then
+		CacheFillID(name, id)
+		return ItemLinkFromID(id)
 	end
 	if type(name) ~= "string" or name == "" then
 		return
@@ -522,12 +779,10 @@ local function FillItemLink(name, itemID)
 	if type(link) == "string" and not Secret(link) then
 		return RememberFillLink(name, link)
 	end
-	local id = ItemIDFromName(name)
+	id = ItemIDFromName(name) or KnownFillID(name)
 	if id then
-		link = ItemLinkFromID(id)
-		if link then
-			return RememberFillLink(name, link)
-		end
+		CacheFillID(name, id)
+		return ItemLinkFromID(id)
 	end
 	if Item and Item.CreateFromItemName then
 		local ok, item = pcall(Item.CreateFromItemName, Item, name)
@@ -546,7 +801,15 @@ local function FillItemLink(name, itemID)
 			end
 		end
 	end
-	return LinkFromBags(name)
+	local bagLink = LinkFromBags(name)
+	if bagLink then
+		return bagLink
+	end
+	id = KnownFillID(name)
+	if id then
+		CacheFillID(name, id)
+		return ItemLinkFromID(id)
+	end
 end
 
 local function ParseCrateFillBundles(blob)
@@ -613,16 +876,9 @@ local function updateWaylaidCrateTooltip(tooltip)
 		return false
 	end
 	local added = false
-	local missing = {}
 	for _, bundle in ipairs(bundles) do
-		bundle.link = FillItemLink(bundle.name, bundle.itemID)
-		if not bundle.link then
-			missing[strlower(bundle.name)] = bundle
-		end
-	end
-	FillMissingLinksFromAuctionator(missing)
-	for _, bundle in ipairs(bundles) do
-		local unit = bundle.link and getAuctionPrice(bundle.link) or nil
+		local link = FillItemLink(bundle.name, bundle.itemID)
+		local unit = getFillAuctionPrice(link, bundle.itemID or ItemIDFromLink(link))
 		local label = bundle.qty .. "x " .. bundle.name .. ": "
 		if unit then
 			tooltip:AddLine(label .. formatGold(bundle.qty * unit))
@@ -662,17 +918,22 @@ local function updateTooltip(tooltip, itemLink)
 	if tooltip.IsForbidden and tooltip:IsForbidden() then
 		return
 	end
-	if tooltip.AuctionworthyAdded then
+	if tooltip.AuctionworthyAdded or tooltip.AuctionworthyBusy then
 		return
 	end
 
 	local name, _, _, _, _, _, _, stackSize, _, _, vendorPrice, _, _, bindType = ItemInfo(itemLink)
 	local title = TooltipLeftTexts(tooltip)[1]
 	if IsWaylaidCrateName(name) or IsWaylaidCrateName(title and StripTooltipCodes(title)) then
-		if updateWaylaidCrateTooltip(tooltip) then
-			tooltip.AuctionworthyAdded = true
+		tooltip.AuctionworthyBusy = true
+		tooltip.AuctionworthyAdded = true
+		local ok, added = pcall(updateWaylaidCrateTooltip, tooltip)
+		if ok and added then
 			tooltip:Show()
+		else
+			tooltip.AuctionworthyAdded = nil
 		end
+		tooltip.AuctionworthyBusy = nil
 		return
 	end
 
@@ -756,6 +1017,9 @@ local function HookCleared(tooltip)
 	end
 	tooltip.AuctionworthyClearedHook = true
 	tooltip:HookScript("OnTooltipCleared", function(self)
+		if self.AuctionworthyBusy then
+			return
+		end
 		self.AuctionworthyAdded = nil
 	end)
 end
@@ -865,16 +1129,322 @@ local function HookAuctionatorOptionsClose()
 	end
 end
 
+WorthyPrint = function(msg)
+	msg = "Worthy: " .. tostring(msg)
+	if SendSystemMessage then
+		SendSystemMessage(msg)
+		return
+	end
+	if ChatFrame_DisplaySystemMessageInPrimary then
+		ChatFrame_DisplaySystemMessageInPrimary(msg)
+		return
+	end
+	local frame = DEFAULT_CHAT_FRAME or SELECTED_CHAT_FRAME
+	if frame and frame.AddMessage then
+		frame:AddMessage(msg)
+		return
+	end
+	print(msg)
+end
+
+SetWorthyScanButtonEnabled = function(enabled, label)
+	local btn = worthyScan.button
+	if not btn then
+		return
+	end
+	label = label or "Worthy Scan"
+	btn:SetEnabled(enabled and true or false)
+	btn:SetText(label)
+	if label == "Worthy Scan" then
+		if btn.FitToText then
+			pcall(btn.FitToText, btn)
+		else
+			local w = btn.GetTextWidth and btn:GetTextWidth() or 80
+			btn:SetWidth(math.max(90, w + 24))
+		end
+	end
+end
+
+local function AuctionatorScanButton()
+	local parent = SafeGlobal("AuctionatorConfigFrame")
+	return parent and parent.ScanButton
+end
+
+local function SetAuctionatorScanButtonEnabled(enabled)
+	local btn = AuctionatorScanButton()
+	if btn and btn.SetEnabled then
+		pcall(btn.SetEnabled, btn, enabled and true or false)
+	end
+end
+
+local function AuctionatorScanActive()
+	if auctionatorBusy then
+		return true
+	end
+	local addon = AuctionatorAddon()
+	local state = addon and addon.State
+	if type(state) ~= "table" then
+		return false
+	end
+	local full = state.FullScanFrameRef
+	if type(full) == "table" and full.inProgress then
+		return true
+	end
+	local inc = state.IncrementalScanFrameRef
+	if type(inc) == "table" and inc.doingFullScan then
+		return true
+	end
+	return false
+end
+
+local WORTHY_SCAN_CD = 5 * 60
+
+local function WorthyScanRemaining()
+	local last = tonumber(options.worthyScanAt) or 0
+	local left = (last + WORTHY_SCAN_CD) - time()
+	if left < 0 then
+		return 0
+	end
+	return math.floor(left)
+end
+
+local function FormatWorthyCD(sec)
+	sec = tonumber(sec) or 0
+	return string.format("CD %d:%02d", math.floor(sec / 60), sec % 60)
+end
+
+local worthyCdTicker
+local function StopWorthyCdTicker()
+	if worthyCdTicker then
+		worthyCdTicker:Cancel()
+		worthyCdTicker = nil
+	end
+end
+
+local function StartWorthyCdTicker()
+	if worthyCdTicker or not C_Timer or not C_Timer.NewTicker then
+		return
+	end
+	worthyCdTicker = C_Timer.NewTicker(1, function()
+		if worthyScan.inProgress then
+			return
+		end
+		local left = WorthyScanRemaining()
+		if left <= 0 then
+			StopWorthyCdTicker()
+			if SyncScanButtons then
+				SyncScanButtons()
+			end
+			return
+		end
+		SetWorthyScanButtonEnabled(false, FormatWorthyCD(left))
+	end)
+end
+
+local function BeginWorthyCooldown()
+	options.worthyScanAt = time()
+	SaveOptions()
+	StartWorthyCdTicker()
+end
+
+SyncScanButtons = function()
+	local us = worthyScan.inProgress
+	if us then
+		SetAuctionatorScanButtonEnabled(false)
+		if worthyScan.button then
+			worthyScan.button:SetEnabled(false)
+		end
+		return
+	end
+	SetAuctionatorScanButtonEnabled(true)
+	local left = WorthyScanRemaining()
+	if left > 0 then
+		SetWorthyScanButtonEnabled(false, FormatWorthyCD(left))
+		StartWorthyCdTicker()
+	elseif AuctionatorScanActive() then
+		SetWorthyScanButtonEnabled(false, "Worthy Scan")
+	else
+		SetWorthyScanButtonEnabled(true, "Worthy Scan")
+	end
+end
+
+RestoreDefaultScanButtons = function()
+	SyncScanButtons()
+end
+
+FinishWorthyScan = function()
+	worthyScan.inProgress = false
+	worthyScan.processing = false
+	worthyScan.mode = nil
+	auctionatorBusy = false
+	AuctionworthyFillIDs = fillIDs
+	BeginWorthyCooldown()
+	RestoreDefaultScanButtons()
+	WorthyPrint("Scan finished. Cached " .. tostring(worthyScan.stored) .. " item names.")
+end
+
+local function AuctionatorScanFrame()
+	local addon = AuctionatorAddon()
+	local state = addon and addon.State
+	if type(state) ~= "table" then
+		return
+	end
+	local useReplicate = false
+	local cfg = addon.Config
+	if cfg and cfg.Get and cfg.Options and cfg.Options.REPLICATE_SCAN then
+		local ok, value = pcall(cfg.Get, cfg.Options.REPLICATE_SCAN)
+		useReplicate = ok and value and true
+	end
+	if useReplicate and state.FullScanFrameRef then
+		return state.FullScanFrameRef, "replicate"
+	end
+	if state.IncrementalScanFrameRef then
+		return state.IncrementalScanFrameRef, "summary"
+	end
+	return state.FullScanFrameRef, "full"
+end
+
+local function StartWorthyScan()
+	if worthyScan.inProgress then
+		WorthyPrint("Worthy Scan already running.")
+		return
+	end
+	if AuctionatorScanActive() then
+		WorthyPrint("Auctionator is already scanning. Wait for it to finish.")
+		SyncScanButtons()
+		return
+	end
+	local left = WorthyScanRemaining()
+	if left > 0 then
+		WorthyPrint("Worthy Scan is on cooldown (" .. FormatWorthyCD(left) .. ").")
+		SyncScanButtons()
+		return
+	end
+	local frame, kind = AuctionatorScanFrame()
+	if type(frame) ~= "table" or type(frame.InitiateScan) ~= "function" then
+		WorthyPrint("Auctionator Full Scan is not ready.")
+		return
+	end
+	if frame.CanInitiate and not frame:CanInitiate() then
+		local msg
+		if frame.NextScanMessage then
+			local ok, text = pcall(frame.NextScanMessage, frame)
+			if ok then
+				msg = text
+			end
+		end
+		WorthyPrint(msg or "Auctionator Full Scan is on cooldown.")
+		return
+	end
+	worthyScan.stored = 0
+	worthyScan.total = 0
+	worthyScan.index = 0
+	worthyScan.processing = false
+	worthyScan.inProgress = true
+	worthyScan.mode = kind
+	SetWorthyScanButtonEnabled(false, "Scanning...")
+	SyncScanButtons()
+	WorthyPrint("Starting scan.")
+	local ok, err = pcall(frame.InitiateScan, frame)
+	if not ok then
+		worthyScan.inProgress = false
+		worthyScan.processing = false
+		worthyScan.mode = nil
+		RestoreDefaultScanButtons()
+		WorthyPrint("Scan failed to start: " .. tostring(err))
+	end
+end
+
+function Auctionworthy:AUCTION_HOUSE_CLOSED()
+	if worthyScan.inProgress then
+		WorthyPrint("Worthy Scan cancelled (AH closed).")
+		worthyScan.inProgress = false
+		worthyScan.processing = false
+		worthyScan.mode = nil
+		auctionatorBusy = false
+	end
+	RestoreDefaultScanButtons()
+end
+
+local function EnsureWorthyScanButton()
+	if worthyScan.button and worthyScan.button.GetParent and worthyScan.button:GetParent() then
+		return
+	end
+	local parent = SafeGlobal("AuctionatorConfigFrame")
+	if type(parent) ~= "table" or not parent.SetScript then
+		return
+	end
+	if not parent.ScanButton and not parent.OptionsButton then
+		return
+	end
+	local btn = CreateFrame("Button", "AuctionworthyWorthyScanButton", parent, "UIPanelDynamicResizeButtonTemplate")
+	if not btn then
+		return
+	end
+	btn:SetText("Worthy Scan")
+	if btn.FitToText then
+		pcall(btn.FitToText, btn)
+	else
+		btn:SetSize(110, 22)
+	end
+	local anchor = parent.OptionsButton or parent.ScanButton
+	btn:SetPoint("TOPRIGHT", anchor, "TOPLEFT", -3, 0)
+	btn:SetScript("OnClick", function()
+		local ok, err = pcall(StartWorthyScan)
+		if not ok then
+			WorthyPrint("Scan failed to start: " .. tostring(err))
+		end
+	end)
+	worthyScan.button = btn
+	SyncScanButtons()
+end
+
+local configFrameHooked
+local function HookWorthyScanButton()
+	EnsureWorthyScanButton()
+	if configFrameHooked then
+		return
+	end
+	local parent = SafeGlobal("AuctionatorConfigFrame")
+	if type(parent) == "table" and parent.HookScript then
+		local ok = pcall(parent.HookScript, parent, "OnShow", EnsureWorthyScanButton)
+		if ok then
+			configFrameHooked = true
+		end
+	end
+end
+
+function Auctionworthy:AUCTION_HOUSE_SHOW()
+	HookWorthyScanButton()
+	if C_Timer and C_Timer.After then
+		C_Timer.After(0.25, function()
+			HookWorthyScanButton()
+			SyncScanButtons()
+		end)
+		C_Timer.After(1, function()
+			HookWorthyScanButton()
+			SyncScanButtons()
+		end)
+	end
+end
+Auctionworthy:RegisterEvent("AUCTION_HOUSE_SHOW")
+Auctionworthy:RegisterEvent("AUCTION_HOUSE_CLOSED")
+
 function Auctionworthy:ADDON_LOADED(name)
 	if name == ADDON_NAME then
 		LoadOptions()
+		LoadFillIDs()
 		InstallHooks()
 		HookAuctionatorOptionsClose()
+		HookAuctionatorScan()
+		HookWorthyScanButton()
 		RefreshAuctionatorConfig(false)
 		return
 	end
 	if name == "Auctionator" then
 		HookAuctionatorOptionsClose()
+		HookAuctionatorScan()
+		HookWorthyScanButton()
 		RefreshAuctionatorConfig(false)
 	end
 end
@@ -882,6 +1452,8 @@ end
 function Auctionworthy:PLAYER_ENTERING_WORLD()
 	self:UnregisterEvent("PLAYER_ENTERING_WORLD")
 	HookAuctionatorOptionsClose()
+	HookAuctionatorScan()
+	HookWorthyScanButton()
 	RefreshAuctionatorConfig(false)
 	if not AuctionatorReady() then
 		print("|cffff7f00Auctionworthy-Forever:|r Auctionator is off. Prices stay empty until you enable it. /worthy refresh after it loads.")
