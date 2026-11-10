@@ -146,21 +146,7 @@ local function AuctionatorConfigValue(key)
 end
 
 local function formatUndercutCopper(copper)
-	copper = math.floor(math.abs(tonumber(copper) or 0))
-	local gold = math.floor(copper / 10000)
-	local silver = math.floor((copper % 10000) / 100)
-	local c = copper % 100
-	local parts = {}
-	if gold > 0 then
-		parts[#parts + 1] = gold .. "g"
-	end
-	if silver > 0 then
-		parts[#parts + 1] = silver .. "s"
-	end
-	if c > 0 or #parts == 0 then
-		parts[#parts + 1] = c .. "c"
-	end
-	return table.concat(parts, ", ")
+	return formatGold(math.abs(tonumber(copper) or 0))
 end
 
 -- In-memory copy only. Never written back to Auctionator.lua.
@@ -404,14 +390,14 @@ local function updateTooltip(tooltip, itemLink)
 	if auctionPrice then
 		local profit = auctionPrice - auctionCosts
 		if options.showAuctionCosts then
-			tooltip:AddLine("Auction Costs | " .. formatGold(auctionCosts))
+			tooltip:AddLine("Auction Costs: " .. formatGold(auctionCosts))
 		end
 		if options.showAuctionPrice then
-			tooltip:AddLine("Auction Price | " .. formatGold(auctionPrice))
+			tooltip:AddLine("Auction Price: " .. formatGold(auctionPrice))
 		end
 		if profit > 0 then
 			if options.showProfitOptions then
-				tooltip:AddLine("Profit | " .. formatGold(profit), 0, 1, 0)
+				tooltip:AddLine("Profit: " .. formatGold(profit), 0, 1, 0)
 			end
 			if options.showDecisionText then
 				if profit < auctionCosts * 0.05 or profit < 25 then
@@ -422,7 +408,7 @@ local function updateTooltip(tooltip, itemLink)
 			end
 		else
 			if options.showProfitOptions then
-				tooltip:AddLine("Loss | " .. formatGold(-profit), 1, 0, 0)
+				tooltip:AddLine("Loss: " .. formatGold(-profit), 1, 0, 0)
 			end
 			if options.showDecisionText then
 				tooltip:AddLine("Sell to vendor!", 1, 0, 0)

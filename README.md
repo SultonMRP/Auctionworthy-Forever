@@ -8,7 +8,7 @@ Install the `Auctionworthy-Forever` folder into `Interface/AddOns`. Auctionator 
 
 Undercut is a **read-only** copy of Auctionator's account or character saved vars (`auction_sales_preference`, `undercut_percentage`, `undercut_static_value`). Worthy never writes `Auctionator.lua`.
 
-- Static: `Undercut: 1c`
-- Percentage (1% of a 10g AH price): `Undercut: 1%, 10s`
+- Static: `Undercut:` plus the gold/silver/copper coin icons
+- Percentage (1% of a 10g AH price): `Undercut: 1%,` plus the same coin icons as the rest of the tooltip
 
 `/worthy refresh` re-reads Auctionator settings without a `/reload`. Closing Auctionator's Options window does the same silently.
