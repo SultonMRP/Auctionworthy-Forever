@@ -891,67 +891,35 @@ local function updateWaylaidCrateTooltip(tooltip)
 	return added
 end
 
-local function GetLinkFromTooltip(tooltip, data)
-	if data then
-		if type(data.hyperlink) == "string" and not Secret(data.hyperlink) then
-			return data.hyperlink
-		end
-		if data.guid and C_Item and C_Item.GetItemLinkByGUID then
-			local ok, link = pcall(C_Item.GetItemLinkByGUID, data.guid)
-			if ok and type(link) == "string" then
-				return link
-			end
-		end
-	end
-	if tooltip.GetItem then
-		local ok, _, link = pcall(tooltip.GetItem, tooltip)
-		if ok and type(link) == "string" then
-			return link
-		end
-	end
+local function AddCrateSectionDivider(tooltip)
+	tooltip:AddLine("-= empty crate auction values =-", 0.55, 0.55, 0.58)
 end
 
-local function updateTooltip(tooltip, itemLink)
-	if not tooltip or not itemLink or Secret(itemLink) then
-		return
-	end
-	if tooltip.IsForbidden and tooltip:IsForbidden() then
-		return
-	end
-	if tooltip.AuctionworthyAdded or tooltip.AuctionworthyBusy then
-		return
-	end
-
-	local name, _, _, _, _, _, _, stackSize, _, _, vendorPrice, _, _, bindType = ItemInfo(itemLink)
-	local title = TooltipLeftTexts(tooltip)[1]
-	if IsWaylaidCrateName(name) or IsWaylaidCrateName(title and StripTooltipCodes(title)) then
-		tooltip.AuctionworthyBusy = true
-		tooltip.AuctionworthyAdded = true
-		local ok, added = pcall(updateWaylaidCrateTooltip, tooltip)
-		if ok and added then
-			tooltip:Show()
-		else
-			tooltip.AuctionworthyAdded = nil
-		end
-		tooltip.AuctionworthyBusy = nil
-		return
-	end
-
+local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill)
+	local _, _, _, _, _, _, _, stackSize, _, _, vendorPrice, _, _, bindType = ItemInfo(itemLink)
 	if isSoulboundTooltip(tooltip) then
-		return
+		return false
+	end
+	if not emptyCrate then
+		if Secret(vendorPrice) or Secret(stackSize) or Secret(bindType) then
+			return false
+		end
+		if bindType == 1 or bindType == 4 then
+			return false
+		end
+		if not vendorPrice or vendorPrice <= 0 then
+			return false
+		end
+	elseif Secret(vendorPrice) then
+		vendorPrice = 0
+	end
+	vendorPrice = tonumber(vendorPrice) or 0
+
+	if emptyCrate and afterFill then
+		AddCrateSectionDivider(tooltip)
 	end
 
-	if Secret(vendorPrice) or Secret(stackSize) or Secret(bindType) then
-		return
-	end
-	if bindType == 1 or bindType == 4 then
-		return
-	end
-	if not vendorPrice or vendorPrice <= 0 then
-		return
-	end
-
-	local marketUnit = getAuctionPrice(itemLink)
+	local marketUnit = emptyCrate and getFillAuctionPrice(itemLink, ItemIDFromLink(itemLink)) or getAuctionPrice(itemLink)
 	local auctionPrice = applyUndercut(marketUnit)
 	local marketPrice = marketUnit
 	stackSize = stackSize or 1
@@ -1007,8 +975,55 @@ local function updateTooltip(tooltip, itemLink)
 		end
 	end
 
-	tooltip.AuctionworthyAdded = true
-	tooltip:Show()
+	return true
+end
+
+local function GetLinkFromTooltip(tooltip, data)
+	if data then
+		if type(data.hyperlink) == "string" and not Secret(data.hyperlink) then
+			return data.hyperlink
+		end
+		if data.guid and C_Item and C_Item.GetItemLinkByGUID then
+			local ok, link = pcall(C_Item.GetItemLinkByGUID, data.guid)
+			if ok and type(link) == "string" then
+				return link
+			end
+		end
+	end
+	if tooltip.GetItem then
+		local ok, _, link = pcall(tooltip.GetItem, tooltip)
+		if ok and type(link) == "string" then
+			return link
+		end
+	end
+end
+
+local function updateTooltip(tooltip, itemLink)
+	if not tooltip or not itemLink or Secret(itemLink) then
+		return
+	end
+	if tooltip.IsForbidden and tooltip:IsForbidden() then
+		return
+	end
+	if tooltip.AuctionworthyAdded or tooltip.AuctionworthyBusy then
+		return
+	end
+
+	local name = ItemInfo(itemLink)
+	local title = TooltipLeftTexts(tooltip)[1]
+	local emptyCrate = IsWaylaidCrateName(name) or IsWaylaidCrateName(title and StripTooltipCodes(title))
+	local added = false
+	if emptyCrate then
+		tooltip.AuctionworthyBusy = true
+		local ok, crateAdded = pcall(updateWaylaidCrateTooltip, tooltip)
+		added = ok and crateAdded
+		tooltip.AuctionworthyBusy = nil
+	end
+	local ok, sellAdded = pcall(updateAuctionSellTooltip, tooltip, itemLink, emptyCrate, added)
+	if added or (ok and sellAdded) then
+		tooltip.AuctionworthyAdded = true
+		tooltip:Show()
+	end
 end
 
 local function HookCleared(tooltip)
