@@ -22,6 +22,13 @@ local defaultOptions = {
 	applyUndercut = true,
 	showUndercut = true,
 	worthyScanAt = 0,
+	shareModifier = "ALT",
+}
+
+local SHARE_MODIFIERS = {
+	{ key = "ALT", label = "Alt" },
+	{ key = "SHIFT", label = "Shift" },
+	{ key = "CTRL", label = "Ctrl" },
 }
 
 local options = {}
@@ -40,6 +47,25 @@ local function LoadOptions()
 		end
 	end
 	options = AuctionworthySavedOptions
+	local shareOk = false
+	for _, entry in ipairs(SHARE_MODIFIERS) do
+		if options.shareModifier == entry.key then
+			shareOk = true
+			break
+		end
+	end
+	if not shareOk then
+		options.shareModifier = "ALT"
+	end
+end
+
+local function ShareModifierLabel(key)
+	for _, entry in ipairs(SHARE_MODIFIERS) do
+		if entry.key == key then
+			return entry.label
+		end
+	end
+	return "Alt"
 end
 
 local function SaveOptions()
@@ -98,6 +124,27 @@ local function formatGold(value)
 	local silver = math.floor((value % 10000) / 100)
 	local copper = math.floor(value % 100)
 	return gold .. "g " .. silver .. "s " .. copper .. "c"
+end
+
+local function formatChatMoney(value)
+	value = math.floor(tonumber(value) or 0)
+	if value <= 0 then
+		return "0c"
+	end
+	local gold = math.floor(value / 10000)
+	local silver = math.floor((value % 10000) / 100)
+	local copper = value % 100
+	local parts = {}
+	if gold > 0 then
+		parts[#parts + 1] = gold .. "g"
+	end
+	if silver > 0 then
+		parts[#parts + 1] = silver .. "s"
+	end
+	if copper > 0 or #parts == 0 then
+		parts[#parts + 1] = copper .. "c"
+	end
+	return table.concat(parts, " ")
 end
 
 -- Other-addon globals / SVs may be missing (Auctionator off, or first run before Auctionator.lua exists).
@@ -376,7 +423,11 @@ local function calculateAuctionCosts(vendorPrice)
 end
 
 local function ItemInfo(itemLink)
-	local ok, name, link, quality, ilvl, minLevel, itemType, subType, stackSize, equipLoc, texture, vendorPrice, classID, subclassID, bindType = pcall(GetItemInfo, itemLink)
+	local getter = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+	if not getter then
+		return
+	end
+	local ok, name, link, quality, ilvl, minLevel, itemType, subType, stackSize, equipLoc, texture, vendorPrice, classID, subclassID, bindType = pcall(getter, itemLink)
 	if not ok then
 		return
 	end
@@ -989,6 +1040,13 @@ local function GetLinkFromTooltip(tooltip, data)
 				return link
 			end
 		end
+		local id = tonumber(data.id)
+		if id and id > 0 then
+			local link = ItemLinkFromID(id)
+			if type(link) == "string" then
+				return link
+			end
+		end
 	end
 	if tooltip.GetItem then
 		local ok, _, link = pcall(tooltip.GetItem, tooltip)
@@ -999,6 +1057,12 @@ local function GetLinkFromTooltip(tooltip, data)
 end
 
 local function updateTooltip(tooltip, itemLink)
+	if tooltip and tooltip.AuctionworthySkip then
+		if tooltip.AuctionworthyOnShare and (tooltip.NumLines and tooltip:NumLines() or 0) > 0 then
+			tooltip.AuctionworthyOnShare()
+		end
+		return
+	end
 	if not tooltip or not itemLink or Secret(itemLink) then
 		return
 	end
@@ -1091,6 +1155,321 @@ local function HookLegacy()
 	end
 end
 
+local function ShareModifierDown()
+	local key = options.shareModifier
+	if key == "SHIFT" then
+		return IsShiftKeyDown()
+	end
+	if key == "CTRL" then
+		return IsControlKeyDown()
+	end
+	return IsAltKeyDown()
+end
+
+local function ShareChannel()
+	if IsInRaid and IsInRaid() then
+		return "RAID"
+	end
+	if UnitInRaid and UnitInRaid("player") then
+		return "RAID"
+	end
+	if GetNumRaidMembers and GetNumRaidMembers() > 0 then
+		return "RAID"
+	end
+	if IsInGroup and IsInGroup() then
+		return "PARTY"
+	end
+	if GetNumSubgroupMembers and GetNumSubgroupMembers() > 0 then
+		return "PARTY"
+	end
+	if GetNumPartyMembers and GetNumPartyMembers() > 0 then
+		return "PARTY"
+	end
+	if GetNumGroupMembers and GetNumGroupMembers() > 0 then
+		return "PARTY"
+	end
+	return "SAY"
+end
+
+local function SendShareLine(text, channel)
+	if type(text) ~= "string" or text == "" or Secret(text) then
+		return
+	end
+	-- Direct call, and not from inside pcall. This client blocks the send otherwise.
+	if C_ChatInfo and C_ChatInfo.SendChatMessage then
+		C_ChatInfo.SendChatMessage(text, channel)
+		return
+	end
+	if SendChatMessage then
+		SendChatMessage(text, channel)
+	end
+end
+
+local scanTooltip
+local function ScanTooltip()
+	if scanTooltip then
+		return scanTooltip
+	end
+	local ok, tip = pcall(CreateFrame, "GameTooltip", "AuctionworthyScanTooltip", UIParent, "GameTooltipTemplate")
+	if not ok or not tip then
+		return nil
+	end
+	tip.AuctionworthySkip = true
+	tip:SetAlpha(0)
+	if tip.EnableMouse then
+		tip:EnableMouse(false)
+	end
+	scanTooltip = tip
+	return tip
+end
+
+-- Hidden tooltip read. Classic fills lines inside SetHyperlink; modern clients
+-- deliver them in the tooltip post-call, which updateTooltip forwards here.
+local function WithCrateBundles(link, callback)
+	local tip = ScanTooltip()
+	if not tip then
+		callback({})
+		return
+	end
+	local finished = false
+	local found = {}
+	local function deliver(force)
+		if finished then
+			return
+		end
+		local n = tip.NumLines and tip:NumLines() or 0
+		local bundles = n > 0 and CrateFillBundles(tip) or {}
+		if #bundles == 0 and not force then
+			return
+		end
+		finished = true
+		tip.AuctionworthyOnShare = nil
+		found = bundles
+	end
+	local function finish()
+		if tip.Hide then
+			tip:Hide()
+		end
+		callback(found)
+	end
+	tip.AuctionworthyOnShare = function()
+		deliver(false)
+	end
+	tip:SetAlpha(0)
+	tip:SetOwner(UIParent, "ANCHOR_NONE")
+	tip:ClearAllPoints()
+	tip:SetPoint("TOPLEFT", UIParent, "BOTTOMRIGHT", 200, 200)
+	tip:ClearLines()
+	tip:SetHyperlink(link)
+	tip:SetAlpha(0)
+	if not finished and (tip.NumLines and tip:NumLines() or 0) > 0 then
+		deliver(false)
+	end
+	if finished then
+		finish()
+		return
+	end
+	if C_Timer and C_Timer.After then
+		C_Timer.After(0.45, function()
+			deliver(true)
+			finish()
+		end)
+	else
+		deliver(true)
+		finish()
+	end
+end
+
+local function WhenItemReady(link, callback)
+	if Item and Item.CreateFromItemLink then
+		local ok, item = pcall(Item.CreateFromItemLink, Item, link)
+		if ok and item and item.ContinueOnItemLoad then
+			item:ContinueOnItemLoad(callback)
+			return
+		end
+	end
+	local id = ItemIDFromLink(link)
+	if not id and type(link) == "string" then
+		id = tonumber(link:match("item:(%d+)"))
+	end
+	if id and C_Item and C_Item.RequestLoadItemDataByID then
+		pcall(C_Item.RequestLoadItemDataByID, id)
+	end
+	if C_Timer and C_Timer.After then
+		C_Timer.After(0.3, callback)
+	else
+		callback()
+	end
+end
+
+local function CheapestFillLine(bundles)
+	local best
+	for _, bundle in ipairs(bundles) do
+		local itemLink = FillItemLink(bundle.name, bundle.itemID)
+		local unit = getFillAuctionPrice(itemLink, bundle.itemID or ItemIDFromLink(itemLink))
+		if unit then
+			local total = math.floor(bundle.qty * unit)
+			if not best or total < best.total then
+				best = {
+					total = total,
+					qty = bundle.qty,
+					name = bundle.name,
+					link = itemLink,
+				}
+			end
+		end
+	end
+	if not best then
+		return "Cheapest: No auction data"
+	end
+	local shown = best.name and ("[" .. best.name .. "]") or "[item]"
+	if type(best.link) == "string" and best.link:find("|H", 1, true) and not Secret(best.link) then
+		shown = best.link
+	end
+	local line = "Cheapest: " .. best.qty .. "x " .. shown .. " (" .. formatChatMoney(best.total) .. ")"
+	if #line > 255 and best.name then
+		line = "Cheapest: " .. best.qty .. "x [" .. best.name .. "] (" .. formatChatMoney(best.total) .. ")"
+	end
+	return line
+end
+
+local shareBusy = false
+local lastShareAt = 0
+
+local function ReleaseShareLater()
+	if C_Timer and C_Timer.After then
+		C_Timer.After(0.4, function()
+			shareBusy = false
+		end)
+	else
+		shareBusy = false
+	end
+end
+
+local function ShareWaylaidLink(link)
+	if type(link) ~= "string" or link == "" or Secret(link) or not link:find("item:", 1, true) then
+		return
+	end
+	local now = GetTime and GetTime() or 0
+	if shareBusy or (now - lastShareAt) < 0.4 then
+		return
+	end
+	lastShareAt = now
+
+	local function begin(retried)
+		local name, full = ItemInfo(link)
+		if Secret(name) or Secret(full) then
+			shareBusy = false
+			return
+		end
+		if type(name) ~= "string" then
+			if retried then
+				shareBusy = false
+				return
+			end
+			shareBusy = true
+			WhenItemReady(link, function()
+				shareBusy = false
+				begin(true)
+			end)
+			return
+		end
+		if not IsWaylaidCrateName(name) then
+			shareBusy = false
+			return
+		end
+		shareBusy = true
+		local channel = ShareChannel()
+		local line1 = "[" .. name .. "]"
+		if type(full) == "string" and full:find("|H", 1, true) and not Secret(full) then
+			line1 = full
+		elseif link:find("|H", 1, true) then
+			line1 = link
+		end
+		WithCrateBundles(full or link, function(bundles)
+			if #bundles == 0 then
+				print("|cffff7f00Auctionworthy-Forever:|r Couldn't read that crate's fill list. Click it once more.")
+				ReleaseShareLater()
+				return
+			end
+			local second = CheapestFillLine(bundles)
+			SendShareLine(line1, channel)
+			SendShareLine(second, channel)
+			ReleaseShareLater()
+		end)
+	end
+
+	begin(false)
+end
+
+local function BagButtonLink(button)
+	if not button then
+		return
+	end
+	local bag, slot
+	if button.GetBagID then
+		bag = button:GetBagID()
+	end
+	if button.GetID then
+		slot = button:GetID()
+	end
+	if bag == nil and button.GetParent then
+		local parent = button:GetParent()
+		if parent and parent.GetID then
+			bag = parent:GetID()
+		end
+	end
+	if bag == nil or slot == nil then
+		return
+	end
+	return ContainerItemLink(bag, slot)
+end
+
+local function HookShareClicks()
+	local function onModified(button, mouseButton)
+		local itemButton = button
+		local click = mouseButton
+		if type(button) == "string" then
+			click = button
+			itemButton = this
+		end
+		if click == "RightButton" or not ShareModifierDown() then
+			return
+		end
+		ShareWaylaidLink(BagButtonLink(itemButton))
+	end
+	if type(HandleModifiedItemClick) == "function" then
+		hooksecurefunc("HandleModifiedItemClick", function(link)
+			if ShareModifierDown() then
+				ShareWaylaidLink(link)
+			end
+		end)
+	end
+	if type(ChatFrame_OnHyperlinkShow) == "function" then
+		hooksecurefunc("ChatFrame_OnHyperlinkShow", function(a, b, c, d)
+			if not ShareModifierDown() then
+				return
+			end
+			local link, text, button
+			if type(a) == "string" then
+				link, text, button = a, b, c
+			else
+				link, text, button = b, c, d
+			end
+			if button == "RightButton" then
+				return
+			end
+			ShareWaylaidLink(text or link)
+		end)
+	end
+	if type(ContainerFrameItemButton_OnModifiedClick) == "function" then
+		hooksecurefunc("ContainerFrameItemButton_OnModifiedClick", onModified)
+	end
+	if type(ContainerFrameItemButtonMixin) == "table" and type(ContainerFrameItemButtonMixin.OnModifiedClick) == "function" then
+		hooksecurefunc(ContainerFrameItemButtonMixin, "OnModifiedClick", onModified)
+	end
+end
+
 local hooked
 local function InstallHooks()
 	if hooked then
@@ -1099,9 +1478,9 @@ local function InstallHooks()
 	hooked = true
 	if TooltipDataProcessor and Enum and Enum.TooltipDataType and Enum.TooltipDataType.Item then
 		TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, AttachItemTooltip)
-	else
-		HookLegacy()
 	end
+	HookLegacy()
+	HookShareClicks()
 end
 
 local hookedOptionsFrames = {}
@@ -1484,7 +1863,7 @@ local function openOptionsPanel()
 
 	local template = BackdropTemplateMixin and "BackdropTemplate" or nil
 	local frame = CreateFrame("Frame", "AuctionworthyOptionsFrame", UIParent, template)
-	frame:SetSize(400, 410)
+	frame:SetSize(400, 530)
 	frame:SetPoint("CENTER")
 	frame:SetFrameStrata("DIALOG")
 	frame:SetClampedToScreen(true)
@@ -1540,6 +1919,70 @@ local function openOptionsPanel()
 		yOffset = yOffset - 30
 	end
 
+	local shareLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	shareLabel:SetPoint("TOPLEFT", 48, yOffset - 4)
+	shareLabel:SetText("Waylaid share key")
+
+	local drop = CreateFrame("Button", "AuctionworthyShareKeyButton", frame, "UIPanelButtonTemplate")
+	drop:SetSize(80, 22)
+	drop:SetPoint("LEFT", shareLabel, "RIGHT", 12, 0)
+	drop:SetText(ShareModifierLabel(options.shareModifier))
+
+	local menu = CreateFrame("Frame", "AuctionworthyShareKeyMenu", frame, template)
+	menu:SetSize(80, 68)
+	menu:SetPoint("TOPLEFT", drop, "BOTTOMLEFT", 0, -2)
+	menu:SetFrameLevel(frame:GetFrameLevel() + 20)
+	menu:EnableMouse(true)
+	menu:Hide()
+	if menu.SetBackdrop then
+		menu:SetBackdrop({
+			bgFile = "Interface/Tooltips/UI-Tooltip-Background",
+			edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
+			tile = true, tileSize = 16, edgeSize = 16,
+			insets = { left = 3, right = 3, top = 3, bottom = 3 },
+		})
+		menu:SetBackdropColor(0, 0, 0, 1)
+	end
+
+	for i, entry in ipairs(SHARE_MODIFIERS) do
+		local row = CreateFrame("Button", nil, menu)
+		row:SetSize(74, 20)
+		row:SetPoint("TOPLEFT", 3, -4 - (i - 1) * 20)
+		local rowText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+		rowText:SetPoint("LEFT", 8, 0)
+		rowText:SetText(entry.label)
+		row:SetScript("OnEnter", function()
+			rowText:SetTextColor(1, 0.82, 0)
+		end)
+		row:SetScript("OnLeave", function()
+			rowText:SetTextColor(1, 1, 1)
+		end)
+		row:SetScript("OnClick", function()
+			options.shareModifier = entry.key
+			SaveOptions()
+			drop:SetText(entry.label)
+			menu:Hide()
+		end)
+	end
+
+	drop:SetScript("OnClick", function()
+		if menu:IsShown() then
+			menu:Hide()
+		else
+			menu:Show()
+		end
+	end)
+
+	local shareNote = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	shareNote:SetPoint("TOPLEFT", 48, yOffset - 32)
+	shareNote:SetWidth(320)
+	shareNote:SetJustifyH("LEFT")
+	shareNote:SetText("Hold that key and click a Waylaid crate in your bags or in chat. Posts the crate link, then the cheapest fill, to Raid, Party, or Say.")
+
+	frame:SetScript("OnHide", function()
+		menu:Hide()
+	end)
+
 	local closeButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
 	closeButton:SetSize(100, 30)
 	closeButton:SetPoint("BOTTOM", 0, 10)
@@ -1562,6 +2005,7 @@ SlashCmdList["AUCTIONWORTHY"] = function(msg)
 	if msg == "help" then
 		print("|cff00ff00Auctionworthy-Forever:|r /worthy — options")
 		print("  /worthy refresh — re-read Auctionator undercut (no /reload)")
+		print("  Hold the share key and click a Waylaid crate to post the cheapest fill.")
 		return
 	end
 	openOptionsPanel()

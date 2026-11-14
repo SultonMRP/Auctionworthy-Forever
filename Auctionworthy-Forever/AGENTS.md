@@ -13,7 +13,7 @@ Do not write `AUCTIONATOR_CONFIG` / `AUCTIONATOR_CHARACTER_CONFIG`. Copy undercu
 
 ## Style
 
-- Match existing Lua: tabs, `local function`, `pcall` around foreign APIs
+- Match existing Lua: tabs, `local function`, `pcall` around foreign APIs except chat send
 - Guard secrets with `Secret()` (`issecretvalue`)
 - Prefer item ID price lookups (`getFillAuctionPrice` / `GetAuctionPriceByItemID`) when names are flaky
 
@@ -34,3 +34,16 @@ Normal items: sell helper only. Soulbound / BoP / quest / no vendor: no sell lin
 ## Fill cache
 
 `AuctionworthyFillIDs` maps lowercased ingredient names → item ID. Worthy Scan (AH, 5 min CD) indexes Auctionator scan rows into that table. Hardcoded fallbacks live in `FILL_NAME_IDS`.
+
+## Waylaid share click
+
+`/worthy` → **Waylaid share key**: Alt (default), Shift, or Ctrl. Saved as `options.shareModifier`.
+
+Hold that key and click a Waylaid crate in bags or a chat item link. Two lines:
+
+1. Crate item link.
+2. `Cheapest: Nx [fill link] (price)` — lowest `qty *` Auctionator unit among fill options.
+
+Channel: Raid, else Party, else Say.
+
+Call `C_ChatInfo.SendChatMessage` directly in the click (fallback `SendChatMessage`). Do not `pcall` the send, and do not defer it with `C_Timer`. Forever blocks that as `ADDON_ACTION_BLOCKED`.
