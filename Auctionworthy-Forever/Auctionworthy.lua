@@ -5,6 +5,7 @@ local ADDON_NAME = ...
 local CALLER_ID = "Auctionworthy-Forever"
 
 local Auctionworthy = CreateFrame("Frame")
+_G.Auctionworthy = Auctionworthy
 Auctionworthy:RegisterEvent("ADDON_LOADED")
 Auctionworthy:SetScript("OnEvent", function(self, event, ...)
 	if self[event] then
@@ -37,6 +38,84 @@ local function Secret(value)
 	return issecretvalue ~= nil and issecretvalue(value)
 end
 
+local tipState = setmetatable({}, { __mode = "k" })
+local function TipState(tooltip)
+	local s = tipState[tooltip]
+	if not s then
+		s = {}
+		tipState[tooltip] = s
+	end
+	return s
+end
+
+local function OwnedByMinimap(tooltip)
+	if not tooltip or not tooltip.GetOwner then
+		return false
+	end
+	local frame = tooltip:GetOwner()
+	for _ = 1, 10 do
+		if not frame then
+			return false
+		end
+		if frame == Minimap or frame == MinimapCluster then
+			return true
+		end
+		local n = frame.GetName and frame:GetName()
+		if type(n) == "string" and not Secret(n) and n:find("Minimap", 1, true) then
+			return true
+		end
+		frame = frame.GetParent and frame:GetParent()
+	end
+	return false
+end
+
+local function RestoreItemWrap(tooltip)
+	if not tooltip or (tooltip.IsForbidden and tooltip:IsForbidden()) or OwnedByMinimap(tooltip) then
+		return
+	end
+	local name = tooltip.GetName and tooltip:GetName()
+	if not name or Secret(name) then
+		return
+	end
+	local n = tooltip.NumLines and tooltip:NumLines() or 0
+	for i = 1, n do
+		local fs = _G[name .. "TextLeft" .. i]
+		if fs then
+			fs:SetWordWrap(true)
+			if fs.SetNonSpaceWrap then
+				fs:SetNonSpaceWrap(true)
+			end
+			if fs.SetMaxLines then
+				fs:SetMaxLines(8)
+			end
+		end
+	end
+end
+
+local CRATE_QUERY_DEFAULT = "?"
+local CRATE_QUERY_MAX = 16
+
+local function StoredCrateQuery(text)
+	if type(text) ~= "string" or Secret(text) then
+		return nil
+	end
+	text = strtrim(text)
+	if text == "" or text == CRATE_QUERY_DEFAULT then
+		return nil
+	end
+	if #text > CRATE_QUERY_MAX then
+		text = strtrim(text:sub(1, CRATE_QUERY_MAX))
+		if text == "" or text == CRATE_QUERY_DEFAULT then
+			return nil
+		end
+	end
+	return text
+end
+
+local function CrateQueryPrefix()
+	return StoredCrateQuery(options.crateQuery) or CRATE_QUERY_DEFAULT
+end
+
 local function LoadOptions()
 	if not AuctionworthySavedOptions then
 		AuctionworthySavedOptions = {}
@@ -57,6 +136,7 @@ local function LoadOptions()
 	if not shareOk then
 		options.shareModifier = "ALT"
 	end
+	options.crateQuery = StoredCrateQuery(options.crateQuery)
 end
 
 local function ShareModifierLabel(key)
@@ -74,22 +154,57 @@ end
 
 local fillIDs = {}
 
+local function FillNameKey(name)
+	if type(name) ~= "string" then
+		return ""
+	end
+	return strlower(strtrim(name))
+end
+
+local function SameText(a, b)
+	return FillNameKey(a) ~= "" and FillNameKey(a) == FillNameKey(b)
+end
+
+local function HasText(haystack, needle)
+	if type(haystack) ~= "string" or type(needle) ~= "string" or needle == "" then
+		return false
+	end
+	return strlower(haystack):find(strlower(needle), 1, true) and true or false
+end
+
+-- Database first. Saved ids are only names the database does not already have.
+local function KnownFillID(name)
+	local key = FillNameKey(name)
+	if key == "" then
+		return
+	end
+	local mats = AuctionworthyMaterialIDs
+	local crates = AuctionworthyCrateIDs
+	local id
+	if type(mats) == "table" then
+		id = tonumber(mats[key])
+	end
+	if (not id or id < 1) and type(crates) == "table" then
+		id = tonumber(crates[key])
+	end
+	if id and id > 0 then
+		return id
+	end
+end
+
 local function LoadFillIDs()
 	local saved = AuctionworthyFillIDs
 	fillIDs = {}
 	if type(saved) == "table" then
 		for name, itemID in pairs(saved) do
 			itemID = tonumber(itemID)
-			if type(name) == "string" and itemID and itemID > 0 then
-				fillIDs[strlower(name)] = itemID
+			local key = FillNameKey(name)
+			if key ~= "" and itemID and itemID > 0 then
+				fillIDs[key] = itemID
 			end
 		end
 	end
 	AuctionworthyFillIDs = fillIDs
-end
-
-local function FillNameKey(name)
-	return strlower(strtrim(name))
 end
 
 local function ItemIDFromLink(link)
@@ -106,6 +221,10 @@ local function CacheFillID(name, itemID)
 	itemID = tonumber(itemID)
 	if type(name) ~= "string" or name == "" or not itemID or itemID < 1 then
 		return itemID
+	end
+	local known = KnownFillID(name)
+	if known then
+		return known
 	end
 	fillIDs[FillNameKey(name)] = itemID
 	AuctionworthyFillIDs = fillIDs
@@ -423,11 +542,10 @@ local function calculateAuctionCosts(vendorPrice)
 end
 
 local function ItemInfo(itemLink)
-	local getter = (C_Item and C_Item.GetItemInfo) or GetItemInfo
-	if not getter then
+	if not (C_Item and C_Item.GetItemInfo) then
 		return
 	end
-	local ok, name, link, quality, ilvl, minLevel, itemType, subType, stackSize, equipLoc, texture, vendorPrice, classID, subclassID, bindType = pcall(getter, itemLink)
+	local ok, name, link, quality, ilvl, minLevel, itemType, subType, stackSize, equipLoc, texture, vendorPrice, classID, subclassID, bindType = pcall(C_Item.GetItemInfo, itemLink)
 	if not ok then
 		return
 	end
@@ -447,7 +565,7 @@ local function isSoulboundTooltip(tooltip)
 		local line = _G[tooltipName .. "TextLeft" .. i]
 		local text = line and line.GetText and line:GetText()
 		if type(text) == "string" and not Secret(text) then
-			if text == ITEM_SOULBOUND or text == ITEM_BIND_ON_PICKUP or text == ITEM_BIND_QUEST then
+			if SameText(text, ITEM_SOULBOUND) or SameText(text, ITEM_BIND_ON_PICKUP) or SameText(text, ITEM_BIND_QUEST) then
 				return true
 			end
 		end
@@ -487,29 +605,30 @@ local function TooltipLeftTexts(tooltip)
 end
 
 local function IsWaylaidCrateName(name)
-	return type(name) == "string" and name:find("Waylaid Crate", 1, true) and true or false
+	return type(name) == "string" and strlower(name):find("waylaid crate", 1, true) and true or false
 end
 
 local function IsCrateFillStopLine(plain)
-	if plain == "" then
+	if type(plain) ~= "string" or plain == "" then
 		return false
 	end
-	if plain:find("^Requires ") or plain:find("^Item ?[Ll]evel") then
+	local lower = strlower(plain)
+	if lower:find("^requires ") or lower:find("^item ?level") then
 		return true
 	end
-	if plain:find("^%d+x .+%: ") then
+	if lower:find("^%d+x .+%: ") then
 		return true
 	end
-	if plain:find("^Sell Price") or plain:find("^ItemID") then
+	if lower:find("^sell price") or lower:find("^itemid") then
 		return true
 	end
-	if ITEM_SOULBOUND and plain == ITEM_SOULBOUND then
+	if ITEM_SOULBOUND and lower == strlower(ITEM_SOULBOUND) then
 		return true
 	end
-	if ITEM_BIND_ON_PICKUP and plain == ITEM_BIND_ON_PICKUP then
+	if ITEM_BIND_ON_PICKUP and lower == strlower(ITEM_BIND_ON_PICKUP) then
 		return true
 	end
-	if ITEM_BIND_QUEST and plain == ITEM_BIND_QUEST then
+	if ITEM_BIND_QUEST and lower == strlower(ITEM_BIND_QUEST) then
 		return true
 	end
 	return false
@@ -546,13 +665,6 @@ local function ItemIDFromName(name)
 			return id
 		end
 	end
-	if GetItemInfoInstant then
-		local ok, id = pcall(GetItemInfoInstant, name)
-		id = tonumber(id)
-		if ok and id and id > 0 then
-			return id
-		end
-	end
 	local _, link = ItemInfo(name)
 	if type(link) == "string" then
 		local id = tonumber(link:match("item:(%d+)"))
@@ -574,29 +686,265 @@ local function CachedFillID(name)
 	return id
 end
 
-local FILL_NAME_IDS = {
-	["dream dust"] = 11176,
-	["lesser nether essence"] = 11174,
-	["greater nether essence"] = 11175,
-	["small radiant shard"] = 11177,
-	["large radiant shard"] = 11178,
-	["small brilliant shard"] = 14343,
-	["large brilliant shard"] = 14344,
-	["illusion dust"] = 16204,
-	["lesser eternal essence"] = 16202,
-	["greater eternal essence"] = 16203,
-	["cured light hide"] = 4236,
-	["bolt of linen cloth"] = 2996,
-	["thorium widget"] = 15994,
-	["truesilver transformer"] = 18631,
-	["thorium tube"] = 16000,
-}
+-- Crate item id -> fill rows. Database recipes stay out of the saved variable.
+local crateFills = {}
 
-local function KnownFillID(name)
-	if type(name) ~= "string" then
+local function DatabaseCrateRecipe(crateID)
+	local recipes = AuctionworthyCrateRecipes
+	crateID = tonumber(crateID)
+	if not crateID or type(recipes) ~= "table" then
 		return
 	end
-	return FILL_NAME_IDS[FillNameKey(name)]
+	local rows = recipes[crateID]
+	if type(rows) == "table" and rows[1] then
+		return rows
+	end
+end
+
+local function CopyFillRows(rows)
+	local clean = {}
+	if type(rows) ~= "table" then
+		return clean
+	end
+	for _, row in ipairs(rows) do
+		if type(row) == "table" then
+			local qty = tonumber(row.qty)
+			local name = row.name
+			if qty and qty > 0 and type(name) == "string" and name ~= "" then
+				local itemID = tonumber(row.itemID)
+				if not itemID or itemID < 1 or KnownFillID(name) then
+					itemID = nil
+				end
+				clean[#clean + 1] = {
+					qty = qty,
+					name = name,
+					itemID = itemID,
+				}
+			end
+		end
+	end
+	return clean
+end
+
+local function PersistSavedCrateFills()
+	local saved = {}
+	for crateID, rows in pairs(crateFills) do
+		if not DatabaseCrateRecipe(crateID) and type(rows) == "table" and #rows > 0 then
+			saved[crateID] = rows
+		end
+	end
+	AuctionworthyCrateFills = saved
+end
+
+local function LoadCrateFills()
+	crateFills = {}
+	local saved = AuctionworthyCrateFills
+	if type(saved) == "table" then
+		for key, rows in pairs(saved) do
+			local crateID = tonumber(key)
+			if crateID and crateID > 0 and not DatabaseCrateRecipe(crateID) then
+				local clean = CopyFillRows(rows)
+				if #clean > 0 then
+					crateFills[crateID] = clean
+				end
+			end
+		end
+	end
+	local recipes = AuctionworthyCrateRecipes
+	if type(recipes) == "table" then
+		for crateID, rows in pairs(recipes) do
+			local clean = CopyFillRows(rows)
+			if #clean > 0 then
+				crateFills[tonumber(crateID)] = clean
+			end
+		end
+	end
+	PersistSavedCrateFills()
+end
+
+-- Name to item id seen in the current Worthy Scan. Not saved until the name is a crate or a fill material.
+local scanItemIDs = {}
+
+local function ScanItemID(name)
+	local id = tonumber(scanItemIDs[FillNameKey(name)])
+	if id and id > 0 then
+		return id
+	end
+end
+
+local function IsFillMaterialName(name)
+	if type(name) ~= "string" or IsWaylaidCrateName(name) then
+		return false
+	end
+	if KnownFillID(name) then
+		return true
+	end
+	local key = FillNameKey(name)
+	if key == "" then
+		return false
+	end
+	for _, rows in pairs(crateFills) do
+		if type(rows) == "table" then
+			for _, row in ipairs(rows) do
+				if type(row) == "table" and FillNameKey(row.name) == key then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+local function ApplyScannedMaterials()
+	local saved = 0
+	for _, rows in pairs(crateFills) do
+		if type(rows) == "table" then
+			for _, row in ipairs(rows) do
+				if type(row) == "table" then
+					local id = ScanItemID(row.name)
+					if KnownFillID(row.name) then
+						if row.itemID then
+							row.itemID = nil
+						end
+					elseif id then
+						if not row.itemID or row.itemID < 1 then
+							row.itemID = id
+						end
+						if fillIDs[FillNameKey(row.name)] ~= id then
+							CacheFillID(row.name, id)
+							saved = saved + 1
+						end
+					end
+				end
+			end
+		end
+	end
+	PersistSavedCrateFills()
+	AuctionworthyFillIDs = fillIDs
+	return saved
+end
+
+local function StoreCrateBundles(link, bundles)
+	local crateID = ItemIDFromLink(link)
+	if not crateID or type(bundles) ~= "table" or #bundles == 0 or DatabaseCrateRecipe(crateID) then
+		return
+	end
+	local rows = {}
+	for _, bundle in ipairs(bundles) do
+		local qty = tonumber(bundle.qty)
+		local name = bundle.name
+		if qty and qty > 0 and type(name) == "string" and name ~= "" then
+			local itemID = tonumber(bundle.itemID) or ScanItemID(name) or CachedFillID(name)
+			if KnownFillID(name) then
+				itemID = nil
+			elseif itemID and itemID > 0 then
+				CacheFillID(name, itemID)
+			else
+				itemID = nil
+			end
+			rows[#rows + 1] = {
+				qty = qty,
+				name = name,
+				itemID = itemID,
+			}
+		end
+	end
+	if #rows == 0 then
+		return
+	end
+	crateFills[crateID] = rows
+	PersistSavedCrateFills()
+end
+
+local function PruneFillIDs()
+	local wanted = {}
+	local function keep(name)
+		if type(name) == "string" and name ~= "" then
+			wanted[FillNameKey(name)] = true
+		end
+	end
+	for _, rows in pairs(crateFills) do
+		if type(rows) == "table" then
+			for _, row in ipairs(rows) do
+				if type(row) == "table" then
+					keep(row.name)
+				end
+			end
+		end
+	end
+	local before = 0
+	for _ in pairs(fillIDs) do
+		before = before + 1
+	end
+	local cleaned = {}
+	for name, itemID in pairs(fillIDs) do
+		if not KnownFillID(name) and (wanted[name] or (type(name) == "string" and IsWaylaidCrateName(name))) then
+			cleaned[name] = itemID
+		end
+	end
+	fillIDs = cleaned
+	AuctionworthyFillIDs = fillIDs
+	local after = 0
+	for _ in pairs(fillIDs) do
+		after = after + 1
+	end
+	return before - after
+end
+
+-- Drop saved names the database already covers, and drop stored ids for those fills.
+local function DropDatabaseAdditions()
+	local removed = 0
+	local cleaned = {}
+	for name, itemID in pairs(fillIDs) do
+		if KnownFillID(name) then
+			removed = removed + 1
+		else
+			cleaned[name] = itemID
+		end
+	end
+	fillIDs = cleaned
+	AuctionworthyFillIDs = fillIDs
+	local stripped = false
+	for _, rows in pairs(crateFills) do
+		if type(rows) == "table" then
+			for _, row in ipairs(rows) do
+				if type(row) == "table" and KnownFillID(row.name) and row.itemID then
+					row.itemID = nil
+					stripped = true
+				end
+			end
+		end
+	end
+	if stripped then
+		PersistSavedCrateFills()
+	end
+	return removed
+end
+
+local function CachedCrateBundles(link)
+	local crateID = ItemIDFromLink(link)
+	if not crateID then
+		return
+	end
+	local rows = crateFills[crateID]
+	if type(rows) ~= "table" then
+		return
+	end
+	local bundles = {}
+	for _, row in ipairs(rows) do
+		local qty = tonumber(row.qty)
+		local name = row.name
+		if qty and qty > 0 and type(name) == "string" and name ~= "" then
+			bundles[#bundles + 1] = {
+				qty = qty,
+				name = name,
+				itemID = tonumber(row.itemID),
+			}
+		end
+	end
+	if #bundles > 0 then
+		return bundles
+	end
 end
 
 local function ScanRowNameAndID(row)
@@ -660,6 +1008,8 @@ local RestoreDefaultScanButtons
 local SetWorthyScanButtonEnabled
 local WorthyPrint
 
+local pendingCrateIDs = {}
+local ReadScannedCrateFills
 local fillIndexTicker
 local function IndexScanData(scanData, onDone)
 	if type(scanData) ~= "table" then
@@ -682,9 +1032,15 @@ local function IndexScanData(scanData, onDone)
 	local function take(row)
 		local name, itemID = ScanRowNameAndID(row)
 		if name and itemID then
-			CacheFillID(name, itemID)
-			if worthyScan and worthyScan.inProgress then
-				worthyScan.stored = (worthyScan.stored or 0) + 1
+			scanItemIDs[FillNameKey(name)] = itemID
+			if IsWaylaidCrateName(name) or IsFillMaterialName(name) then
+				CacheFillID(name, itemID)
+			end
+			if IsWaylaidCrateName(name) then
+				pendingCrateIDs[itemID] = true
+				if worthyScan and worthyScan.inProgress then
+					worthyScan.stored = (worthyScan.stored or 0) + 1
+				end
 			end
 		end
 	end
@@ -718,6 +1074,9 @@ end
 
 local auctionatorBusy = false
 local SyncScanButtons
+
+local RememberSearchPrices
+local CaptureLoadedAuctionPrices
 
 local scanHooked
 local function HookAuctionatorScan()
@@ -753,6 +1112,11 @@ local function HookAuctionatorScan()
 	end
 	addGroup(addon.FullScan)
 	addGroup(addon.IncrementalScan)
+	local searchEnd = addon.Shopping and addon.Shopping.Tab and addon.Shopping.Tab.Events and addon.Shopping.Tab.Events.SearchEnd
+	if searchEnd then
+		kind[searchEnd] = "prices"
+		events[#events + 1] = searchEnd
+	end
 	if #events == 0 then
 		return
 	end
@@ -777,8 +1141,15 @@ local function HookAuctionatorScan()
 					WorthyPrint("Auctionator Full Scan failed.")
 					return
 				end
+			elseif what == "prices" then
+				if RememberSearchPrices then
+					RememberSearchPrices(data)
+				end
 			elseif what == "done" then
 				auctionatorBusy = false
+				if CaptureLoadedAuctionPrices then
+					CaptureLoadedAuctionPrices()
+				end
 				if worthyScan.inProgress then
 					IndexScanData(data, FinishWorthyScan)
 					return
@@ -809,7 +1180,7 @@ local function LinkFromBags(name)
 			local ok, link = pcall(getLink, bag, slot)
 			if ok and type(link) == "string" and not Secret(link) then
 				local itemName = ItemInfo(link)
-				if itemName == name then
+				if SameText(itemName, name) then
 					return RememberFillLink(name, link)
 				end
 			end
@@ -818,9 +1189,11 @@ local function LinkFromBags(name)
 end
 
 local function FillItemLink(name, itemID)
-	local id = tonumber(itemID) or CachedFillID(name)
+	local id = KnownFillID(name) or tonumber(itemID) or CachedFillID(name)
 	if id then
-		CacheFillID(name, id)
+		if not KnownFillID(name) then
+			CacheFillID(name, id)
+		end
 		return ItemLinkFromID(id)
 	end
 	if type(name) ~= "string" or name == "" then
@@ -921,29 +1294,522 @@ local function CrateFillBundles(tooltip)
 	return bundles
 end
 
-local function updateWaylaidCrateTooltip(tooltip)
+-- Names seen in Auctionator's price database or the current full-scan rows.
+-- Not saved. Only a fill material that matches one of these is written to AuctionworthyFillIDs.
+local auctionNames = {}
+local pendingFillNames = {}
+local nameLoadTried = {}
+local heldNameItems = {}
+local crateTip = { tooltip = nil, link = nil }
+local nameWalk = { index = 1, keys = nil, rows = nil, rowIndex = 1, running = false }
+local QueueCrateTooltipRefresh
+
+local function AuctionatorPriceDB()
+	local addon = AuctionatorAddon()
+	local db = addon and addon.Database and addon.Database.db
+	if type(db) == "table" then
+		return db
+	end
+end
+
+local function AuctionatorHasItem(itemID)
+	itemID = tonumber(itemID)
+	local db = AuctionatorPriceDB()
+	if not itemID or type(db) ~= "table" then
+		return false
+	end
+	local row = db[tostring(itemID)] or db[itemID]
+	return type(row) == "table"
+end
+
+local function RememberAuctionName(name, itemID)
+	itemID = tonumber(itemID)
+	if type(name) ~= "string" or not itemID or itemID < 1 or Secret(name) then
+		return
+	end
+	name = strtrim(name)
+	local key = FillNameKey(name)
+	if key == "" or auctionNames[key] then
+		return
+	end
+	auctionNames[key] = itemID
+end
+
+local function CachedItemName(itemID)
+	itemID = tonumber(itemID)
+	if not itemID or itemID < 1 then
+		return
+	end
+	if C_Item and C_Item.IsItemDataCachedByID then
+		local ok, cached = pcall(C_Item.IsItemDataCachedByID, itemID)
+		if not ok or not cached then
+			return
+		end
+	elseif not (C_Item and C_Item.GetItemNameByID) then
+		return
+	end
+	if C_Item and C_Item.GetItemNameByID then
+		local ok, name = pcall(C_Item.GetItemNameByID, itemID)
+		if ok and type(name) == "string" and name ~= "" and not Secret(name) then
+			return name
+		end
+	end
+	if C_Item and C_Item.IsItemDataCachedByID then
+		local name = ItemInfo(itemID)
+		if type(name) == "string" and name ~= "" and not Secret(name) then
+			return name
+		end
+	end
+end
+
+local function AssignFillID(name, itemID)
+	itemID = tonumber(itemID)
+	local key = FillNameKey(name)
+	if key == "" or not itemID or itemID < 1 then
+		return
+	end
+	if KnownFillID(name) then
+		pendingFillNames[key] = nil
+		return
+	end
+	if not AuctionatorHasItem(itemID) then
+		return
+	end
+	local changed = fillIDs[key] ~= itemID
+	CacheFillID(name, itemID)
+	for _, rows in pairs(crateFills) do
+		if type(rows) == "table" then
+			for _, row in ipairs(rows) do
+				if type(row) == "table" and FillNameKey(row.name) == key and row.itemID ~= itemID then
+					row.itemID = itemID
+					changed = true
+				end
+			end
+		end
+	end
+	if changed then
+		PersistSavedCrateFills()
+		pendingFillNames[key] = nil
+		if QueueCrateTooltipRefresh then
+			QueueCrateTooltipRefresh()
+		end
+	else
+		pendingFillNames[key] = nil
+	end
+end
+
+local function ClaimPendingName(name, itemID)
+	local key = FillNameKey(name)
+	if key == "" or not pendingFillNames[key] then
+		return false
+	end
+	local before = fillIDs[key]
+	AssignFillID(pendingFillNames[key], itemID)
+	return fillIDs[key] ~= before
+end
+
+local function ScanRowPlainName(row)
+	if type(row) ~= "table" then
+		return
+	end
+	local info = row.replicateInfo or row.auctionInfo
+	local name, itemID
+	if type(info) == "table" then
+		if type(info[1]) == "string" and not Secret(info[1]) then
+			name = strtrim(info[1])
+		end
+		itemID = tonumber(info[17])
+	end
+	if (not name or name == "") and type(row.itemName) == "string" and not Secret(row.itemName) then
+		name = strtrim(row.itemName)
+	end
+	if type(row.itemKey) == "table" then
+		itemID = itemID or tonumber(row.itemKey.itemID)
+	end
+	itemID = itemID or ItemIDFromLink(row.itemLink)
+	if name and name ~= "" and itemID and itemID > 0 then
+		return name, itemID
+	end
+end
+
+local function EnsureNameWalkLists()
+	if nameWalk.keys then
+		return true
+	end
+	local db = AuctionatorPriceDB()
+	if type(db) ~= "table" then
+		return false
+	end
+	local keys = {}
+	for key, row in pairs(db) do
+		if type(row) == "table" then
+			local id = tonumber(key)
+			if id and id > 0 then
+				keys[#keys + 1] = id
+			end
+		end
+	end
+	local rows = {}
+	local frame = SafeGlobal("AuctionatorFullScanFrame")
+	local data = frame and frame.scanData
+	if type(data) == "table" then
+		for _, row in pairs(data) do
+			rows[#rows + 1] = row
+		end
+	end
+	nameWalk.keys = keys
+	nameWalk.rows = rows
+	nameWalk.index = 1
+	nameWalk.rowIndex = 1
+	return true
+end
+
+local function StartAuctionatorNameWalk()
+	if nameWalk.running or not next(pendingFillNames) then
+		return
+	end
+	if not EnsureNameWalkLists() then
+		return
+	end
+	if nameWalk.rowIndex > #nameWalk.rows and nameWalk.index > #nameWalk.keys then
+		for key in pairs(pendingFillNames) do
+			pendingFillNames[key] = nil
+		end
+		return
+	end
+	nameWalk.running = true
+	local function step()
+		if not next(pendingFillNames) then
+			nameWalk.running = false
+			return
+		end
+		local found = false
+		local rows = nameWalk.rows
+		if nameWalk.rowIndex <= #rows then
+			local stop = math.min(nameWalk.rowIndex + 400, #rows)
+			for i = nameWalk.rowIndex, stop do
+				local name, itemID = ScanRowPlainName(rows[i])
+				if name and itemID then
+					RememberAuctionName(name, itemID)
+					if ClaimPendingName(name, itemID) then
+						found = true
+					end
+				end
+			end
+			nameWalk.rowIndex = stop + 1
+		else
+			local keys = nameWalk.keys
+			local stop = math.min(nameWalk.index + 400, #keys)
+			for i = nameWalk.index, stop do
+				local itemID = keys[i]
+				local name = CachedItemName(itemID)
+				if name then
+					RememberAuctionName(name, itemID)
+					if ClaimPendingName(name, itemID) then
+						found = true
+					end
+				end
+			end
+			nameWalk.index = stop + 1
+			if nameWalk.index > #keys then
+				for key in pairs(pendingFillNames) do
+					pendingFillNames[key] = nil
+				end
+			end
+		end
+		if found and QueueCrateTooltipRefresh then
+			QueueCrateTooltipRefresh()
+		end
+		if next(pendingFillNames) and (nameWalk.rowIndex <= #nameWalk.rows or nameWalk.index <= #nameWalk.keys) then
+			if C_Timer and C_Timer.After then
+				C_Timer.After(0, step)
+			else
+				nameWalk.running = false
+			end
+		else
+			nameWalk.running = false
+		end
+	end
+	if C_Timer and C_Timer.After then
+		C_Timer.After(0, step)
+	else
+		nameWalk.running = false
+	end
+end
+
+local function RequestFillName(name)
+	local key = FillNameKey(name)
+	if key == "" or nameLoadTried[key] or not pendingFillNames[key] then
+		return
+	end
+	nameLoadTried[key] = true
+	if not Item or not Item.CreateFromItemName then
+		return
+	end
+	local ok, item = pcall(Item.CreateFromItemName, Item, name)
+	if not ok or not item or (item.IsItemEmpty and item:IsItemEmpty()) then
+		return
+	end
+	if not item.ContinueOnItemLoad then
+		local id = item.GetItemID and tonumber(item:GetItemID())
+		if id then
+			AssignFillID(name, id)
+		end
+		return
+	end
+	heldNameItems[key] = item
+	item:ContinueOnItemLoad(function()
+		local held = heldNameItems[key]
+		heldNameItems[key] = nil
+		local id = held and held.GetItemID and tonumber(held:GetItemID())
+		if id then
+			AssignFillID(name, id)
+		end
+	end)
+end
+
+-- Cheapest unit price seen on the auctions currently loaded in the house.
+-- Auctionator's saved price database can miss an item that is sitting on the AH.
+local liveUnit = {}
+
+local function NoteLivePrice(name, itemID, unitPrice, quiet)
+	if type(name) ~= "string" then
+		return false
+	end
+	name = StripTooltipCodes(name)
+	local key = FillNameKey(name)
+	if key == "" then
+		return false
+	end
+	local changed = false
+	unitPrice = tonumber(unitPrice)
+	if unitPrice and unitPrice > 0 then
+		unitPrice = math.floor(unitPrice)
+		if not liveUnit[key] or unitPrice < liveUnit[key] then
+			liveUnit[key] = unitPrice
+			if pendingFillNames[key] then
+				changed = true
+			end
+		end
+	end
+	itemID = tonumber(itemID)
+	if itemID and itemID > 0 and pendingFillNames[key] and not KnownFillID(name) and fillIDs[key] ~= itemID then
+		CacheFillID(pendingFillNames[key], itemID)
+		for _, rows in pairs(crateFills) do
+			if type(rows) == "table" then
+				for _, row in ipairs(rows) do
+					if type(row) == "table" and FillNameKey(row.name) == key then
+						row.itemID = itemID
+					end
+				end
+			end
+		end
+		PersistSavedCrateFills()
+		changed = true
+	end
+	if liveUnit[key] then
+		pendingFillNames[key] = nil
+	end
+	if changed and not quiet and QueueCrateTooltipRefresh then
+		QueueCrateTooltipRefresh()
+	end
+	return changed
+end
+
+local function UnitFromCounts(buyout, count)
+	buyout = tonumber(buyout)
+	count = tonumber(count) or 1
+	if not buyout or buyout <= 0 then
+		return nil
+	end
+	if count < 1 then
+		count = 1
+	end
+	return math.floor(buyout / count)
+end
+
+local function HarvestShoppingPrices(quiet)
+	local frame = SafeGlobal("AuctionatorShoppingFrame")
+	local results = frame and frame.DataProvider and frame.DataProvider.results
+	if type(results) ~= "table" then
+		return
+	end
+	for _, entry in ipairs(results) do
+		if type(entry) == "table" then
+			local name = entry.name
+			if type(name) ~= "string" or name == "" then
+				local info = entry.entries and entry.entries[1] and entry.entries[1].info
+				if type(info) == "table" then
+					name = info[1]
+				end
+			end
+			if type(name) == "string" then
+				name = StripTooltipCodes(name)
+				local itemID = ItemIDFromLink(entry.itemLink) or ItemIDFromLink(entry.itemString)
+				NoteLivePrice(name, itemID, entry.minPrice, quiet)
+			end
+		end
+	end
+end
+
+local function ReadLoadedAuction(view, index, quiet)
+	if not GetAuctionItemInfo then
+		return
+	end
+	local ok, name, _, count, _, _, _, _, _, _, buyout, _, _, _, _, _, _, itemID = pcall(GetAuctionItemInfo, view, index)
+	if not ok or type(name) ~= "string" or name == "" or Secret(name) then
+		return
+	end
+	if (not itemID or itemID == 0) and GetAuctionItemLink then
+		local linkOK, link = pcall(GetAuctionItemLink, view, index)
+		if linkOK then
+			itemID = ItemIDFromLink(link)
+		end
+	end
+	NoteLivePrice(name, itemID, UnitFromCounts(buyout, count), quiet)
+end
+
+local listWalk = { index = 0, last = -1, running = false }
+
+local function AuctionListBounds()
+	if not GetNumAuctionItems or not GetAuctionItemInfo then
+		return nil
+	end
+	local batch = tonumber(GetNumAuctionItems("list")) or 0
+	if batch < 1 then
+		return nil
+	end
+	local ok, name = pcall(GetAuctionItemInfo, "list", 0)
+	if ok and type(name) == "string" and name ~= "" then
+		return 0, batch - 1
+	end
+	return 1, batch
+end
+
+local function HarvestLoadedAuctions(quiet, limit)
+	HarvestShoppingPrices(quiet)
+	local first, last = AuctionListBounds()
+	if not first then
+		return
+	end
+	local stop = last
+	if limit then
+		stop = math.min(last, first + limit - 1)
+	end
+	for index = first, stop do
+		ReadLoadedAuction("list", index, quiet)
+	end
+	if stop < last then
+		listWalk.index = stop + 1
+		listWalk.last = last
+	else
+		listWalk.index = last + 1
+		listWalk.last = last
+	end
+end
+
+local function StartLoadedAuctionWalk()
+	if listWalk.running or not next(pendingFillNames) then
+		return
+	end
+	local _, last = AuctionListBounds()
+	if not last or listWalk.index > last then
+		return
+	end
+	listWalk.last = last
+	listWalk.running = true
+	local function step()
+		if not next(pendingFillNames) or listWalk.index > listWalk.last then
+			listWalk.running = false
+			return
+		end
+		local stop = math.min(listWalk.last, listWalk.index + 400)
+		for index = listWalk.index, stop do
+			ReadLoadedAuction("list", index, false)
+		end
+		listWalk.index = stop + 1
+		if next(pendingFillNames) and listWalk.index <= listWalk.last and C_Timer and C_Timer.After then
+			C_Timer.After(0, step)
+		else
+			listWalk.running = false
+		end
+	end
+	if C_Timer and C_Timer.After then
+		C_Timer.After(0, step)
+	else
+		listWalk.running = false
+	end
+end
+
+local function NoteUnresolvedFill(name)
+	local key = FillNameKey(name)
+	if key == "" or pendingFillNames[key] then
+		return
+	end
+	local known = KnownFillID(name) or tonumber(fillIDs[key]) or auctionNames[key] or ScanItemID(name)
+	if known and (getAuctionPriceByItemID(known) or AuctionatorHasItem(known)) then
+		if not KnownFillID(name) and fillIDs[key] ~= known then
+			AssignFillID(name, known)
+		end
+		return
+	end
+	pendingFillNames[key] = name
+	RequestFillName(name)
+end
+
+local function updateWaylaidCrateTooltip(tooltip, itemLink)
 	local bundles = CrateFillBundles(tooltip)
 	if #bundles == 0 then
 		return false
 	end
 	local added = false
 	for _, bundle in ipairs(bundles) do
+		local id = KnownFillID(bundle.name) or CachedFillID(bundle.name) or tonumber(bundle.itemID) or auctionNames[FillNameKey(bundle.name)] or ScanItemID(bundle.name)
+		if id and id > 0 then
+			bundle.itemID = id
+		end
 		local link = FillItemLink(bundle.name, bundle.itemID)
-		local unit = getFillAuctionPrice(link, bundle.itemID or ItemIDFromLink(link))
+		bundle.itemID = tonumber(bundle.itemID) or ItemIDFromLink(link)
+		local unit = getFillAuctionPrice(link, bundle.itemID) or liveUnit[FillNameKey(bundle.name)]
+		if not unit then
+			NoteUnresolvedFill(bundle.name)
+			local found = KnownFillID(bundle.name) or CachedFillID(bundle.name) or auctionNames[FillNameKey(bundle.name)]
+			if found and found ~= bundle.itemID then
+				bundle.itemID = found
+				link = FillItemLink(bundle.name, found)
+				unit = getFillAuctionPrice(link, bundle.itemID)
+			end
+			if not unit and next(pendingFillNames) then
+				HarvestLoadedAuctions(true, 500)
+				unit = liveUnit[FillNameKey(bundle.name)]
+				if unit then
+					bundle.itemID = bundle.itemID or CachedFillID(bundle.name)
+				end
+			end
+		end
 		local label = bundle.qty .. "x " .. bundle.name .. ": "
 		if unit then
-			tooltip:AddLine(label .. formatGold(bundle.qty * unit))
+			tooltip:AddLine(label .. formatGold(bundle.qty * unit), 1, 0.82, 0, true)
 			added = true
 		elseif options.showNoAuctionData then
-			tooltip:AddLine(label .. "No Auction Data", 1, 0, 1)
+			tooltip:AddLine(label .. "No Auction Data", 1, 0, 1, true)
 			added = true
 		end
+	end
+	if itemLink then
+		StoreCrateBundles(itemLink, bundles)
+		crateTip.tooltip = tooltip
+		crateTip.link = itemLink
+	end
+	if next(pendingFillNames) then
+		StartAuctionatorNameWalk()
+		StartLoadedAuctionWalk()
 	end
 	return added
 end
 
 local function AddCrateSectionDivider(tooltip)
-	tooltip:AddLine("-= empty crate auction values =-", 0.55, 0.55, 0.58)
+	tooltip:AddLine("-= empty crate auction values =-", 0.55, 0.55, 0.58, true)
 end
 
 local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill)
@@ -985,44 +1851,40 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 		marketPrice = marketPrice and marketPrice * stackSize or nil
 		auctionPrice = auctionPrice and auctionPrice * stackSize or nil
 		vendorPrice = vendorPrice * stackSize
-		tooltip:AddLine("|cFFFFA500Calculations for Full Stack (" .. stackSize .. "x)|r")
+		tooltip:AddLine("|cFFFFA500Calculations for Full Stack (" .. stackSize .. "x)|r", 1, 0.82, 0, true)
 	end
 
 	if auctionPrice then
 		local profit = auctionPrice - auctionCosts
 		if options.showAuctionCosts then
-			tooltip:AddLine("Auction Costs: " .. formatGold(auctionCosts))
+			tooltip:AddLine("Auction Costs: " .. formatGold(auctionCosts), 1, 0.82, 0, true)
 		end
 		if options.showAuctionPrice then
-			tooltip:AddLine("Auction Price: " .. formatGold(auctionPrice))
+			tooltip:AddLine("Auction Price: " .. formatGold(auctionPrice), 1, 0.82, 0, true)
 		end
 		if profit > 0 then
 			if options.showProfitOptions then
-				tooltip:AddLine("Profit: " .. formatGold(profit), 0, 1, 0)
+				tooltip:AddLine("Profit: " .. formatGold(profit), 0, 1, 0, true)
 			end
 			if options.showDecisionText then
-				if profit < auctionCosts * 0.05 or profit < 25 then
-					tooltip:AddLine("Sell to Vendor!", 1, 0.65, 0)
-				else
-					tooltip:AddLine("Auction it!", 0, 1, 0)
-				end
+				tooltip:AddLine("Auction it!", 0, 1, 0, true)
 			end
 		else
 			if options.showProfitOptions then
-				tooltip:AddLine("Loss: " .. formatGold(-profit), 1, 0, 0)
+				tooltip:AddLine("Loss: " .. formatGold(-profit), 1, 0, 0, true)
 			end
 			if options.showDecisionText then
-				tooltip:AddLine("Sell to vendor!", 1, 0, 0)
+				tooltip:AddLine("Sell to vendor!", 1, 0, 0, true)
 			end
 		end
 	elseif options.showNoAuctionData then
-		tooltip:AddLine("No Auction Data", 1, 0, 1)
+		tooltip:AddLine("No Auction Data", 1, 0, 1, true)
 	end
 
 	if options.showUndercut then
 		local line = undercutLine(marketUnit, stackMult)
 		if line then
-			tooltip:AddLine(line, 0.65, 0.85, 1)
+			tooltip:AddLine(line, 0.65, 0.85, 1, true)
 		end
 	end
 
@@ -1034,17 +1896,19 @@ local function GetLinkFromTooltip(tooltip, data)
 		if type(data.hyperlink) == "string" and not Secret(data.hyperlink) then
 			return data.hyperlink
 		end
-		if data.guid and C_Item and C_Item.GetItemLinkByGUID then
+		if data.guid and not Secret(data.guid) and C_Item and C_Item.GetItemLinkByGUID then
 			local ok, link = pcall(C_Item.GetItemLinkByGUID, data.guid)
 			if ok and type(link) == "string" then
 				return link
 			end
 		end
-		local id = tonumber(data.id)
-		if id and id > 0 then
-			local link = ItemLinkFromID(id)
-			if type(link) == "string" then
-				return link
+		if not Secret(data.id) then
+			local id = tonumber(data.id)
+			if id and id > 0 then
+				local link = ItemLinkFromID(id)
+				if type(link) == "string" then
+					return link
+				end
 			end
 		end
 	end
@@ -1069,7 +1933,11 @@ local function updateTooltip(tooltip, itemLink)
 	if tooltip.IsForbidden and tooltip:IsForbidden() then
 		return
 	end
-	if tooltip.AuctionworthyAdded or tooltip.AuctionworthyBusy then
+	if OwnedByMinimap(tooltip) then
+		return
+	end
+	local st = TipState(tooltip)
+	if st.added or st.busy then
 		return
 	end
 
@@ -1078,29 +1946,79 @@ local function updateTooltip(tooltip, itemLink)
 	local emptyCrate = IsWaylaidCrateName(name) or IsWaylaidCrateName(title and StripTooltipCodes(title))
 	local added = false
 	if emptyCrate then
-		tooltip.AuctionworthyBusy = true
-		local ok, crateAdded = pcall(updateWaylaidCrateTooltip, tooltip)
+		st.busy = true
+		local ok, crateAdded = pcall(updateWaylaidCrateTooltip, tooltip, itemLink)
 		added = ok and crateAdded
-		tooltip.AuctionworthyBusy = nil
+		st.busy = nil
 	end
 	local ok, sellAdded = pcall(updateAuctionSellTooltip, tooltip, itemLink, emptyCrate, added)
 	if added or (ok and sellAdded) then
-		tooltip.AuctionworthyAdded = true
-		tooltip:Show()
+		st.added = true
+		RestoreItemWrap(tooltip)
+		-- Forever: do not GameTooltip:Show from a tooltip post-call (clips Equip/Use).
 	end
 end
 
 local function HookCleared(tooltip)
-	if not tooltip or tooltip.AuctionworthyClearedHook then
+	if not tooltip then
 		return
 	end
-	tooltip.AuctionworthyClearedHook = true
+	local st = TipState(tooltip)
+	if st.clearedHook then
+		return
+	end
+	st.clearedHook = true
 	tooltip:HookScript("OnTooltipCleared", function(self)
-		if self.AuctionworthyBusy then
+		local flags = TipState(self)
+		if flags.busy then
 			return
 		end
-		self.AuctionworthyAdded = nil
+		flags.added = nil
 	end)
+	tooltip:HookScript("OnShow", function(self)
+		if TipState(self).added then
+			RestoreItemWrap(self)
+		end
+	end)
+end
+
+local function ShownTooltipItemID(tooltip)
+	if tooltip and tooltip.GetItem then
+		local ok, _, link = pcall(tooltip.GetItem, tooltip)
+		if ok then
+			return ItemIDFromLink(link)
+		end
+	end
+end
+
+QueueCrateTooltipRefresh = function()
+	if crateTip.refreshQueued or not crateTip.link then
+		return
+	end
+	crateTip.refreshQueued = true
+	local function run()
+		crateTip.refreshQueued = nil
+		local tooltip = crateTip.tooltip
+		local link = crateTip.link
+		if not tooltip or not link or not tooltip.IsShown or not tooltip:IsShown() then
+			return
+		end
+		if not tooltip.SetHyperlink or (tooltip.IsForbidden and tooltip:IsForbidden()) then
+			return
+		end
+		local shownID = ShownTooltipItemID(tooltip)
+		local wantID = ItemIDFromLink(link)
+		if shownID and wantID and shownID ~= wantID then
+			return
+		end
+		TipState(tooltip).added = nil
+		pcall(tooltip.SetHyperlink, tooltip, link)
+	end
+	if C_Timer and C_Timer.After then
+		C_Timer.After(0, run)
+	else
+		crateTip.refreshQueued = nil
+	end
 end
 
 local function AttachItemTooltip(tooltip, data)
@@ -1111,9 +2029,6 @@ end
 local function ContainerItemLink(bag, slot)
 	if C_Container and C_Container.GetContainerItemLink then
 		return C_Container.GetContainerItemLink(bag, slot)
-	end
-	if GetContainerItemLink then
-		return GetContainerItemLink(bag, slot)
 	end
 end
 
@@ -1156,6 +2071,9 @@ local function HookLegacy()
 end
 
 local function ShareModifierDown()
+	if InCombatLockdown and InCombatLockdown() then
+		return false
+	end
 	local key = options.shareModifier
 	if key == "SHIFT" then
 		return IsShiftKeyDown()
@@ -1191,18 +2109,548 @@ local function ShareChannel()
 	return "SAY"
 end
 
-local function SendShareLine(text, channel)
+local IsLocalPlayer
+
+local function ClickDebug(text)
+	if Auctionworthy.ReportClick then
+		Auctionworthy:ReportClick(text)
+	end
+end
+
+-- This client does not deliver a whisper addressed to you. Show it in the whisper window anyway.
+local function ShowSelfWhisper(text, who)
+	local shown = false
+	if type(ChatFrame_MessageEventHandler) == "function" then
+		local n = NUM_CHAT_WINDOWS or 10
+		for i = 1, n do
+			local frame = _G["ChatFrame" .. i]
+			if frame and frame.IsEventRegistered and frame:IsEventRegistered("CHAT_MSG_WHISPER") then
+				local ok = pcall(ChatFrame_MessageEventHandler, frame, "CHAT_MSG_WHISPER", text, who, "", "", who, "", 0, 0, "", 0, 0, UnitGUID and UnitGUID("player"))
+				if ok then
+					shown = true
+				end
+			end
+		end
+	end
+	if shown then
+		return
+	end
+	local info = ChatTypeInfo and ChatTypeInfo.WHISPER
+	local r, g, b = 1, 0.502, 1
+	if type(info) == "table" then
+		r, g, b = info.r or r, info.g or g, info.b or b
+	end
+	if DEFAULT_CHAT_FRAME and DEFAULT_CHAT_FRAME.AddMessage then
+		DEFAULT_CHAT_FRAME:AddMessage(who .. " whispers: " .. text, r, g, b)
+	else
+		print(who .. " whispers: " .. text)
+	end
+end
+
+local function SendShareLine(text, channel, target)
 	if type(text) ~= "string" or text == "" or Secret(text) then
 		return
 	end
+	if channel == "WHISPER" and (type(target) ~= "string" or target == "" or Secret(target)) then
+		return
+	end
+	if channel == "WHISPER" and IsLocalPlayer and IsLocalPlayer(target) then
+		ClickDebug("own whisper")
+		ShowSelfWhisper(text, target)
+		return
+	end
+	ClickDebug("send " .. tostring(channel) .. " " .. tostring(target))
 	-- Direct call, and not from inside pcall. This client blocks the send otherwise.
+	-- Whispers go through SendChatMessage. That is the call other addons on this client use.
+	if channel == "WHISPER" and SendChatMessage then
+		SendChatMessage(text, "WHISPER", nil, target)
+		return
+	end
 	if C_ChatInfo and C_ChatInfo.SendChatMessage then
-		C_ChatInfo.SendChatMessage(text, channel)
+		if channel == "WHISPER" then
+			C_ChatInfo.SendChatMessage(text, channel, nil, target)
+		else
+			C_ChatInfo.SendChatMessage(text, channel)
+		end
 		return
 	end
 	if SendChatMessage then
 		SendChatMessage(text, channel)
 	end
+end
+
+-- Item links seen in whisper or guild. Key-click on that line whispers the sender.
+local whisperedItems = {}
+local guildItems = {}
+
+local function RememberLinkedSender(store, message, sender)
+	if type(message) ~= "string" or type(sender) ~= "string" then
+		return
+	end
+	if message == "" or sender == "" or Secret(message) or Secret(sender) then
+		return
+	end
+	local found = false
+	for itemID in message:gmatch("item:(%d+)") do
+		itemID = tonumber(itemID)
+		if itemID and itemID > 0 then
+			found = true
+			store[#store + 1] = {
+				itemID = itemID,
+				sender = sender,
+			}
+		end
+	end
+	if not found then
+		return
+	end
+	while #store > 40 do
+		table.remove(store, 1)
+	end
+end
+
+local function RememberWhisperItem(message, sender)
+	RememberLinkedSender(whisperedItems, message, sender)
+end
+
+local function RememberGuildItem(message, sender)
+	RememberLinkedSender(guildItems, message, sender)
+end
+
+-- Prat rewrites the visible line ([G] [26:Name]). Keep the channel and sender it already parsed.
+local pratPosts = {}
+
+local function RememberPratMessage(message)
+	if type(message) ~= "table" then
+		return
+	end
+	local channel = message.CHATGROUP or message.CHATTYPE
+	if type(channel) ~= "string" or Secret(channel) then
+		return
+	end
+	channel = strupper(channel)
+	if channel ~= "GUILD" and channel ~= "WHISPER" then
+		return
+	end
+	local sender = message.PLAYERLINK
+	if type(sender) ~= "string" or sender == "" or Secret(sender) then
+		sender = message.PLAYER
+	end
+	local body = message.MESSAGE
+	if type(sender) ~= "string" or sender == "" or Secret(sender) or type(body) ~= "string" or Secret(body) then
+		return
+	end
+	local found = false
+	for itemID in body:gmatch("item:(%d+)") do
+		itemID = tonumber(itemID)
+		if itemID and itemID > 0 then
+			found = true
+			pratPosts[#pratPosts + 1] = {
+				channel = channel,
+				sender = sender,
+				itemID = itemID,
+			}
+		end
+	end
+	if not found then
+		return
+	end
+	while #pratPosts > 40 do
+		table.remove(pratPosts, 1)
+	end
+end
+
+local pratListener = {}
+function pratListener:Prat_PostAddMessage(_, message)
+	RememberPratMessage(message)
+end
+
+local pratHooked
+local function HookPratMessages()
+	if pratHooked then
+		return
+	end
+	local prat = _G.Prat
+	if not prat or type(prat.RegisterChatEvent) ~= "function" then
+		return
+	end
+	prat.RegisterChatEvent(pratListener, "Prat_PostAddMessage")
+	pratHooked = true
+end
+
+-- These stay local to this block so the file stays under Lua's 200-local limit.
+local FullChatLine, ClassifyLine
+do
+local function LineLooksLikeChannel(line, channel)
+	if type(line) ~= "string" then
+		return false
+	end
+	if channel == "GUILD" then
+		return HasText(line, ":GUILD") or HasText(line, "[G]") or HasText(line, "[Guild]")
+	end
+	if channel == "WHISPER" then
+		if HasText(line, "[W To]") or HasText(line, ":WHISPER_INFORM") then
+			return false
+		end
+		return HasText(line, ":WHISPER") or HasText(line, "[W From]") or HasText(line, "whispers:")
+	end
+	return false
+end
+
+local function PratOwner(link, line)
+	local itemID = ItemIDFromLink(link)
+	if not itemID then
+		return
+	end
+	local hinted
+	if LineLooksLikeChannel(line, "GUILD") then
+		hinted = "GUILD"
+	elseif LineLooksLikeChannel(line, "WHISPER") then
+		hinted = "WHISPER"
+	elseif line then
+		return
+	end
+	for i = #pratPosts, 1, -1 do
+		local row = pratPosts[i]
+		if row.itemID == itemID and (not hinted or row.channel == hinted) then
+			return row.sender, hinted or row.channel
+		end
+	end
+end
+
+local function NamesMatch(stored, hint)
+	stored = strlower(stored)
+	hint = strlower(hint)
+	if stored == hint then
+		return true
+	end
+	if stored:find(hint .. "-", 1, true) == 1 then
+		return true
+	end
+	if hint:find(stored .. "-", 1, true) == 1 then
+		return true
+	end
+	return false
+end
+
+local function RecentLinkedSender(store, link, nameHint)
+	local itemID = ItemIDFromLink(link)
+	if not itemID then
+		return nameHint
+	end
+	for i = #store, 1, -1 do
+		local row = store[i]
+		if row.itemID == itemID and (not nameHint or NamesMatch(row.sender, nameHint)) then
+			return row.sender
+		end
+	end
+	return nameHint
+end
+
+local function RecentWhisperSender(link, nameHint)
+	return RecentLinkedSender(whisperedItems, link, nameHint)
+end
+
+local function RecentGuildSender(link, nameHint)
+	return RecentLinkedSender(guildItems, link, nameHint)
+end
+
+-- Forever's UnitName is the first name. Chat shows UnitFullName as "First Surname".
+local function PlayerChatName()
+	local short = UnitName and UnitName("player")
+	if type(short) == "string" and Secret(short) then
+		short = nil
+	end
+	if not UnitFullName then
+		return short
+	end
+	local first, second = UnitFullName("player")
+	if type(first) ~= "string" or first == "" or Secret(first) then
+		return short
+	end
+	if type(second) ~= "string" or second == "" or Secret(second) then
+		return short or first
+	end
+	if WOW_PROJECT_CAMELOT and WOW_PROJECT_ID == WOW_PROJECT_CAMELOT then
+		return first .. " " .. second
+	end
+	local realm = GetNormalizedRealmName and GetNormalizedRealmName() or GetRealmName and GetRealmName()
+	if type(realm) == "string" and strlower((second:gsub("%s+", ""))) == strlower((realm:gsub("%s+", ""))) then
+		return short or first
+	end
+	return first .. " " .. second
+end
+
+IsLocalPlayer = function(target)
+	if type(target) ~= "string" or target == "" or Secret(target) then
+		return false
+	end
+	local function same(name)
+		return type(name) == "string" and not Secret(name) and strlower(name) == strlower(target)
+	end
+	if same(PlayerChatName()) then
+		return true
+	end
+	if UnitName and same(UnitName("player")) then
+		return true
+	end
+	return false
+end
+
+local function WhisperLineMark()
+	local pattern = CHAT_WHISPER_GET
+	if type(pattern) ~= "string" then
+		return "whispers:"
+	end
+	local mark = strtrim(pattern:gsub("%%s", ""))
+	if mark == "" then
+		return "whispers:"
+	end
+	return mark
+end
+
+local function LineIsWhisper(line)
+	return HasText(line, WhisperLineMark())
+end
+
+local function LineIsGuild(line)
+	if type(line) ~= "string" then
+		return false
+	end
+	if HasText(line, "|Hchannel:GUILD|h") or HasText(line, "[Guild]") or HasText(line, "[G]") then
+		return true
+	end
+	local pattern = CHAT_GUILD_GET
+	if type(pattern) ~= "string" then
+		return false
+	end
+	local mark = strtrim(pattern:gsub("%%s", ""))
+	return mark ~= "" and HasText(line, mark)
+end
+
+local function PlayerNameFromLine(line)
+	if type(line) ~= "string" or Secret(line) then
+		return
+	end
+	local data = line:match("|Hplayer:([^|]+)|h")
+	if type(data) ~= "string" or data == "" or Secret(data) then
+		return
+	end
+	local name = data:match("^(.-):%d+:") or data:match("^([^:]+)")
+	if type(name) ~= "string" or name == "" or Secret(name) then
+		return
+	end
+	return name
+end
+
+-- |Hplayer:Name:line:GUILD:|h is the channel that owns the clicked line.
+local function OwnerChannel(line)
+	if type(line) ~= "string" or Secret(line) then
+		return
+	end
+	local data = line:match("|Hplayer:([^|]+)|h")
+	if type(data) == "string" then
+		local name, chatType = data:match("^(.-):%d+:([^:]*)")
+		if type(name) == "string" and name ~= "" then
+			if chatType == "" or chatType == "0" then
+				chatType = nil
+			end
+			return name, chatType and strupper(chatType) or nil
+		end
+	end
+	local name = PlayerNameFromLine(line)
+	if LineIsGuild(line) then
+		return name, "GUILD"
+	end
+	if LineIsWhisper(line) then
+		return name, "WHISPER"
+	end
+	return name
+end
+
+local function MouseoverFontText(region)
+	if not region or not region.GetObjectType or region:GetObjectType() ~= "FontString" then
+		return
+	end
+	if region.IsShown then
+		local shown = region:IsShown()
+		if Secret(shown) or not shown then
+			return
+		end
+	end
+	if not region.IsMouseOver then
+		return
+	end
+	local over = region:IsMouseOver()
+	if Secret(over) or not over then
+		return
+	end
+	local text = region.GetText and region:GetText()
+	if type(text) ~= "string" or text == "" or Secret(text) then
+		return
+	end
+	return text
+end
+
+local function MouseoverLineOnFrame(frame, itemID)
+	if not frame or not frame.GetRegions then
+		return
+	end
+	local fallback
+	local count = frame:GetNumRegions() or 0
+	for i = 1, count do
+		local text = MouseoverFontText(select(i, frame:GetRegions()))
+		if text then
+			if itemID and text:find("item:" .. itemID, 1, true) then
+				return text
+			end
+			fallback = text
+		end
+	end
+	return fallback
+end
+
+local function ForEachChatFrame(callback)
+	local n = NUM_CHAT_WINDOWS or 10
+	for i = 1, n do
+		local frame = _G["ChatFrame" .. i]
+		if frame and callback(frame) then
+			return true
+		end
+	end
+end
+
+local function MessageTextUnderMouse(frame, itemID)
+	if not frame or type(frame.visibleLines) ~= "table" then
+		return
+	end
+	local fallback
+	for _, line in ipairs(frame.visibleLines) do
+		local over = line.IsMouseOver and line:IsMouseOver()
+		if not Secret(over) and over then
+			local info = line.messageInfo
+			local text = type(info) == "table" and info.message or (line.GetText and line:GetText())
+			if type(text) == "string" and text ~= "" and not Secret(text) then
+				if itemID and text:find("item:" .. itemID, 1, true) then
+					return text
+				end
+				fallback = fallback or text
+			end
+		end
+	end
+	return fallback
+end
+
+local function MouseoverChatLine(preferred, link)
+	local itemID = ItemIDFromLink(link)
+	if preferred then
+		local text = MouseoverLineOnFrame(preferred, itemID)
+		if text then
+			return text
+		end
+	end
+	local found
+	ForEachChatFrame(function(frame)
+		if frame ~= preferred then
+			local text = MouseoverLineOnFrame(frame, itemID)
+			if text then
+				found = text
+				return true
+			end
+		end
+	end)
+	return found
+end
+
+local function MouseIsOverChatFrame()
+	local hit
+	ForEachChatFrame(function(frame)
+		local visible = frame.IsVisible and frame:IsVisible()
+		local over = frame.IsMouseOver and frame:IsMouseOver()
+		if not Secret(visible) and visible and not Secret(over) and over then
+			hit = frame
+			return true
+		end
+	end)
+	return hit
+end
+
+FullChatLine = function(chatFrame, link)
+	local itemID = ItemIDFromLink(link)
+	if chatFrame then
+		local text = MessageTextUnderMouse(chatFrame, itemID)
+		if text then
+			return text
+		end
+	end
+	local found
+	ForEachChatFrame(function(frame)
+		if frame ~= chatFrame then
+			local text = MessageTextUnderMouse(frame, itemID)
+			if text then
+				found = text
+				return true
+			end
+		end
+	end)
+	if found then
+		return found
+	end
+	return MouseoverChatLine(chatFrame, link)
+end
+
+local function LineIsLoot(line)
+	if type(line) ~= "string" or Secret(line) then
+		return false
+	end
+	local lower = strlower(line)
+	return lower:find("receive loot", 1, true) or lower:find("receives loot", 1, true)
+end
+
+local function LineIsOutgoingWhisper(line)
+	return HasText(line, "[W To]") or HasText(line, ":WHISPER_INFORM")
+end
+
+local function LineIsPublic(line)
+	if HasText(line, ":SAY") or HasText(line, ":PARTY") or HasText(line, ":RAID") then
+		return true
+	end
+	if HasText(line, "[PL]") or HasText(line, "[RL]") or HasText(line, "[RW]") then
+		return true
+	end
+	return HasText(line, "[S]") or HasText(line, "[P]") or HasText(line, "[R]")
+end
+
+-- GUILD and incoming WHISPER keep the sender. SAY, PARTY, RAID, and LOOT do not.
+ClassifyLine = function(line, link)
+	if LineIsOutgoingWhisper(line) then
+		return "WHISPER_OUT"
+	end
+	if LineIsLoot(line) then
+		return "LOOT"
+	end
+	local pratSender, pratChannel = PratOwner(link, line)
+	if pratChannel == "GUILD" then
+		return "GUILD", pratSender
+	end
+	if pratChannel == "WHISPER" then
+		return "WHISPER", pratSender
+	end
+	local name, channel = line and OwnerChannel(line)
+	if channel == "WHISPER_INFORM" then
+		return "WHISPER_OUT", name
+	end
+	if channel == "GUILD" or LineIsGuild(line) then
+		local sender = name and (RecentGuildSender(link, name) or name) or RecentGuildSender(link)
+		return "GUILD", sender
+	end
+	if channel == "WHISPER" or LineIsWhisper(line) then
+		return "WHISPER", RecentWhisperSender(link, name) or name
+	end
+	if channel == "SAY" or channel == "PARTY" or channel == "PARTY_LEADER" or channel == "RAID" or channel == "RAID_LEADER" or channel == "RAID_WARNING" or LineIsPublic(line) then
+		return channel or "SAY"
+	end
+end
 end
 
 local scanTooltip
@@ -1245,6 +2693,9 @@ local function WithCrateBundles(link, callback)
 		finished = true
 		tip.AuctionworthyOnShare = nil
 		found = bundles
+		if #found > 0 then
+			StoreCrateBundles(link, found)
+		end
 	end
 	local function finish()
 		if tip.Hide then
@@ -1255,12 +2706,20 @@ local function WithCrateBundles(link, callback)
 	tip.AuctionworthyOnShare = function()
 		deliver(false)
 	end
+	local itemID = ItemIDFromLink(link)
+	if itemID and C_Item and C_Item.RequestLoadItemDataByID then
+		pcall(C_Item.RequestLoadItemDataByID, itemID)
+	end
 	tip:SetAlpha(0)
 	tip:SetOwner(UIParent, "ANCHOR_NONE")
 	tip:ClearAllPoints()
 	tip:SetPoint("TOPLEFT", UIParent, "BOTTOMRIGHT", 200, 200)
 	tip:ClearLines()
+	-- Chat only has the item id. Showing this tooltip is what fills in the crate list.
 	tip:SetHyperlink(link)
+	if tip.Show then
+		tip:Show()
+	end
 	tip:SetAlpha(0)
 	if not finished and (tip.NumLines and tip:NumLines() or 0) > 0 then
 		deliver(false)
@@ -1280,11 +2739,30 @@ local function WithCrateBundles(link, callback)
 	end
 end
 
+local loadingItems = {}
+local loadToken = 0
+
 local function WhenItemReady(link, callback)
+	local done = false
+	loadToken = loadToken + 1
+	local token = loadToken
+	local function finish()
+		if done then
+			return
+		end
+		done = true
+		loadingItems[token] = nil
+		callback()
+	end
 	if Item and Item.CreateFromItemLink then
 		local ok, item = pcall(Item.CreateFromItemLink, Item, link)
 		if ok and item and item.ContinueOnItemLoad then
-			item:ContinueOnItemLoad(callback)
+			-- Keep the item alive. Otherwise the load callback never runs and shareBusy sticks.
+			loadingItems[token] = item
+			item:ContinueOnItemLoad(finish)
+			if C_Timer and C_Timer.After then
+				C_Timer.After(1.5, finish)
+			end
 			return
 		end
 	end
@@ -1296,9 +2774,9 @@ local function WhenItemReady(link, callback)
 		pcall(C_Item.RequestLoadItemDataByID, id)
 	end
 	if C_Timer and C_Timer.After then
-		C_Timer.After(0.3, callback)
+		C_Timer.After(0.3, finish)
 	else
-		callback()
+		finish()
 	end
 end
 
@@ -1306,7 +2784,7 @@ local function CheapestFillLine(bundles)
 	local best
 	for _, bundle in ipairs(bundles) do
 		local itemLink = FillItemLink(bundle.name, bundle.itemID)
-		local unit = getFillAuctionPrice(itemLink, bundle.itemID or ItemIDFromLink(itemLink))
+		local unit = getFillAuctionPrice(itemLink, ItemIDFromLink(itemLink) or bundle.itemID)
 		if unit then
 			local total = math.floor(bundle.qty * unit)
 			if not best or total < best.total then
@@ -1333,8 +2811,210 @@ local function CheapestFillLine(bundles)
 	return line
 end
 
+-- Same profit or loss as the empty-crate tooltip, after Auctionator undercut.
+local function EmptyCrateValueLine(itemLink)
+	local _, _, _, _, _, _, _, _, _, _, vendorPrice = ItemInfo(itemLink)
+	if Secret(vendorPrice) then
+		vendorPrice = 0
+	end
+	vendorPrice = tonumber(vendorPrice) or 0
+	local marketUnit = getFillAuctionPrice(itemLink, ItemIDFromLink(itemLink))
+	local auctionPrice = applyUndercut(marketUnit)
+	if not auctionPrice then
+		return "Empty AH value: No Auction Data"
+	end
+	local profit = auctionPrice - calculateAuctionCosts(vendorPrice)
+	if profit > 0 then
+		return "Empty AH value: Profit: " .. formatChatMoney(profit)
+	end
+	return "Empty AH value: Loss: " .. formatChatMoney(-profit)
+end
+
+local function IsKnownCrateID(itemID)
+	itemID = tonumber(itemID)
+	if not itemID or itemID < 1 then
+		return false
+	end
+	if DatabaseCrateRecipe(itemID) then
+		return true
+	end
+	local crates = AuctionworthyCrateIDs
+	if type(crates) ~= "table" then
+		return false
+	end
+	for _, crateID in pairs(crates) do
+		if tonumber(crateID) == itemID then
+			return true
+		end
+	end
+	return false
+end
+
+local function IsCrateLink(link)
+	if type(link) ~= "string" or link == "" or Secret(link) then
+		return false
+	end
+	local shown = link:match("|h%[(.-)%]|h")
+	if IsWaylaidCrateName(shown) then
+		return true
+	end
+	local name = ItemInfo(link)
+	if Secret(name) then
+		name = nil
+	end
+	if IsWaylaidCrateName(name) then
+		return true
+	end
+	if IsKnownCrateID(ItemIDFromLink(link)) then
+		return true
+	end
+	return CachedCrateBundles(link) and true or false
+end
+
+local function SellItemFacts(link)
+	local name, _, _, _, _, _, _, _, _, _, vendorPrice, classID, _, bindType = ItemInfo(link)
+	if Secret(name) or type(name) ~= "string" or name == "" then
+		return
+	end
+	return true, vendorPrice, classID, bindType
+end
+
+-- Same cutoff as the item tooltip: Auction it, or sell to the vendor.
+-- The second return is true when the item is not loaded yet.
+local function ItemSellLine(itemLink)
+	local loaded, vendorPrice, classID, bindType = SellItemFacts(itemLink)
+	local pricedLink = itemLink
+	if not loaded then
+		local id = ItemIDFromLink(itemLink)
+		local rebuilt = id and ItemLinkFromID(id)
+		if type(rebuilt) == "string" and rebuilt ~= itemLink then
+			local rebuiltLoaded, rebuiltVendor, rebuiltClass, rebuiltBind = SellItemFacts(rebuilt)
+			if rebuiltLoaded then
+				loaded, vendorPrice, classID, bindType = rebuiltLoaded, rebuiltVendor, rebuiltClass, rebuiltBind
+				pricedLink = rebuilt
+			end
+		end
+	end
+	if not loaded then
+		return nil, true
+	end
+	local blocked
+	if not Secret(bindType) then
+		bindType = tonumber(bindType)
+		if bindType == 1 or bindType == 4 then
+			blocked = true
+		end
+	end
+	if not blocked and not Secret(classID) then
+		classID = tonumber(classID)
+		local questClass = Enum and Enum.ItemClass and Enum.ItemClass.Questitem or 12
+		if classID == questClass then
+			blocked = true
+		end
+	end
+	if blocked then
+		return "Can not be posted on auction house, sorry"
+	end
+	if Secret(vendorPrice) or Secret(bindType) then
+		return "No Auction Data"
+	end
+	vendorPrice = tonumber(vendorPrice) or 0
+	if vendorPrice <= 0 then
+		return "No Auction Data"
+	end
+	local id = ItemIDFromLink(itemLink) or ItemIDFromLink(pricedLink)
+	local marketUnit = getAuctionPrice(itemLink) or getAuctionPrice(pricedLink) or getAuctionPriceByItemID(id)
+	local auctionPrice = applyUndercut(marketUnit)
+	if type(auctionPrice) ~= "number" then
+		return "No Auction Data"
+	end
+	local auctionCosts = calculateAuctionCosts(vendorPrice)
+	local profit = auctionPrice - auctionCosts
+	if profit > 0 then
+		return "AH it: " .. formatChatMoney(profit)
+	end
+	return "Vendor it: " .. formatChatMoney(-profit) .. " loss if posted on AH"
+end
+
+local pendingItemSells = {}
+
+local function DeliverItemSell(link, who)
+	if Auctionworthy.ScanBusy and Auctionworthy:ScanBusy() then
+		return true
+	end
+	local line, waiting = ItemSellLine(link)
+	if waiting then
+		return false
+	end
+	if line then
+		SendShareLine(line, "WHISPER", who)
+	end
+	return true
+end
+
+local function FlushItemSells(itemID)
+	local rows = pendingItemSells[itemID]
+	if not rows then
+		return
+	end
+	pendingItemSells[itemID] = nil
+	local held = rows.item
+	local again
+	for i = 1, #rows do
+		if rows[i] and not DeliverItemSell(rows[i].link, rows[i].who) then
+			again = again or {}
+			again[#again + 1] = rows[i]
+		end
+	end
+	if again then
+		again.item = held
+		pendingItemSells[itemID] = again
+	end
+end
+
+local function WatchItemSell(link, who)
+	if DeliverItemSell(link, who) then
+		return
+	end
+	local id = ItemIDFromLink(link)
+	if not id then
+		SendShareLine("No Auction Data", "WHISPER", who)
+		return
+	end
+	local bucket = pendingItemSells[id]
+	if not bucket then
+		bucket = {}
+		pendingItemSells[id] = bucket
+	end
+	bucket[#bucket + 1] = { link = link, who = who }
+	if Item and Item.CreateFromItemLink then
+		local ok, item = pcall(Item.CreateFromItemLink, Item, link)
+		if ok and item and item.ContinueOnItemLoad then
+			bucket.item = item
+			item:ContinueOnItemLoad(function()
+				FlushItemSells(id)
+			end)
+		end
+	end
+	if C_Item and C_Item.RequestLoadItemDataByID then
+		pcall(C_Item.RequestLoadItemDataByID, id)
+	end
+end
+
+local itemSellWait = CreateFrame("Frame")
+itemSellWait:SetScript("OnEvent", function(_, _, itemID)
+	FlushItemSells(tonumber(itemID))
+end)
+if not C_EventUtils or not C_EventUtils.IsEventValid or C_EventUtils.IsEventValid("ITEM_DATA_LOAD_RESULT") then
+	pcall(itemSellWait.RegisterEvent, itemSellWait, "ITEM_DATA_LOAD_RESULT")
+end
+if not C_EventUtils or not C_EventUtils.IsEventValid or C_EventUtils.IsEventValid("GET_ITEM_INFO_RECEIVED") then
+	pcall(itemSellWait.RegisterEvent, itemSellWait, "GET_ITEM_INFO_RECEIVED")
+end
+
 local shareBusy = false
 local lastShareAt = 0
+local shareWhisperTo
 
 local function ReleaseShareLater()
 	if C_Timer and C_Timer.After then
@@ -1346,27 +3026,54 @@ local function ReleaseShareLater()
 	end
 end
 
-local function ShareWaylaidLink(link)
+local function ShareWaylaidLink(link, whisperTo)
 	if type(link) ~= "string" or link == "" or Secret(link) or not link:find("item:", 1, true) then
+		ClickDebug("share skipped: bad link")
 		return
+	end
+	if type(whisperTo) ~= "string" or whisperTo == "" or Secret(whisperTo) then
+		whisperTo = nil
 	end
 	local now = GetTime and GetTime() or 0
 	if shareBusy or (now - lastShareAt) < 0.4 then
+		-- Bag clicks hit two hooks. The second one only keeps a whisper target.
+		if whisperTo then
+			shareWhisperTo = whisperTo
+		end
 		return
 	end
 	lastShareAt = now
+	shareWhisperTo = whisperTo
 
-	local function begin(retried)
-		local name, full = ItemInfo(link)
-		if Secret(name) or Secret(full) then
-			shareBusy = false
+	local function shownCrateName()
+		if type(link) ~= "string" or Secret(link) then
 			return
 		end
-		if type(name) ~= "string" then
+		local lower = strlower(link)
+		local startAt, endAt = lower:find("%[waylaid crate[^%]]*%]")
+		if not startAt then
+			return
+		end
+		return link:sub(startAt + 1, endAt - 1)
+	end
+	local function begin(retried)
+		local name, full = ItemInfo(link)
+		if Secret(name) then
+			name = nil
+		end
+		if Secret(full) then
+			full = nil
+		end
+		if type(name) ~= "string" or name == "" then
+			name = shownCrateName()
+		end
+		if type(name) ~= "string" or name == "" then
 			if retried then
+				ClickDebug("share skipped: item name not ready")
 				shareBusy = false
 				return
 			end
+			ClickDebug("share waiting for item")
 			shareBusy = true
 			WhenItemReady(link, function()
 				shareBusy = false
@@ -1375,100 +3082,107 @@ local function ShareWaylaidLink(link)
 			return
 		end
 		if not IsWaylaidCrateName(name) then
+			ClickDebug("share skipped: not a crate (" .. name .. ")")
 			shareBusy = false
 			return
 		end
 		shareBusy = true
-		local channel = ShareChannel()
 		local line1 = "[" .. name .. "]"
 		if type(full) == "string" and full:find("|H", 1, true) and not Secret(full) then
 			line1 = full
 		elseif link:find("|H", 1, true) then
 			line1 = link
 		end
-		WithCrateBundles(full or link, function(bundles)
+		local function sendBundles(bundles)
 			if #bundles == 0 then
 				print("|cffff7f00Auctionworthy-Forever:|r Couldn't read that crate's fill list. Click it once more.")
 				ReleaseShareLater()
 				return
 			end
 			local second = CheapestFillLine(bundles)
-			SendShareLine(line1, channel)
-			SendShareLine(second, channel)
+			local target = shareWhisperTo
+			if type(target) == "string" and target ~= "" and not Secret(target) then
+				local reply = second
+				if type(name) == "string" and name ~= "" and not Secret(name) then
+					local withName = name .. ": " .. second
+					if #withName <= 255 then
+						reply = withName
+					end
+				end
+				SendShareLine(reply, "WHISPER", target)
+			else
+				local channel = ShareChannel()
+				SendShareLine(line1, channel)
+				SendShareLine(second, channel)
+			end
 			ReleaseShareLater()
-		end)
+		end
+		local cached = CachedCrateBundles(full or link)
+		ClickDebug("share " .. name .. " cached=" .. tostring(cached ~= nil))
+		if cached then
+			sendBundles(cached)
+			return
+		end
+		WithCrateBundles(full or link, sendBundles)
 	end
 
 	begin(false)
 end
 
-local function BagButtonLink(button)
-	if not button then
-		return
-	end
-	local bag, slot
-	if button.GetBagID then
-		bag = button:GetBagID()
-	end
-	if button.GetID then
-		slot = button:GetID()
-	end
-	if bag == nil and button.GetParent then
-		local parent = button:GetParent()
-		if parent and parent.GetID then
-			bag = parent:GetID()
-		end
-	end
-	if bag == nil or slot == nil then
-		return
-	end
-	return ContainerItemLink(bag, slot)
-end
 
-local function HookShareClicks()
-	local function onModified(button, mouseButton)
-		local itemButton = button
-		local click = mouseButton
-		if type(button) == "string" then
-			click = button
-			itemButton = this
+ReadScannedCrateFills = function()
+	local ids = {}
+	for itemID in pairs(pendingCrateIDs) do
+		ids[#ids + 1] = itemID
+	end
+	pendingCrateIDs = {}
+	if #ids == 0 then
+		local materials = ApplyScannedMaterials()
+		if materials > 0 then
+			WorthyPrint("Saved " .. materials .. " crafting materials from the scan.")
 		end
-		if click == "RightButton" or not ShareModifierDown() then
+		return
+	end
+	local index = 0
+	local saved = 0
+	local function nextCrate()
+		if shareBusy then
+			if C_Timer and C_Timer.After then
+				C_Timer.After(0.3, nextCrate)
+			end
 			return
 		end
-		ShareWaylaidLink(BagButtonLink(itemButton))
-	end
-	if type(HandleModifiedItemClick) == "function" then
-		hooksecurefunc("HandleModifiedItemClick", function(link)
-			if ShareModifierDown() then
-				ShareWaylaidLink(link)
-			end
-		end)
-	end
-	if type(ChatFrame_OnHyperlinkShow) == "function" then
-		hooksecurefunc("ChatFrame_OnHyperlinkShow", function(a, b, c, d)
-			if not ShareModifierDown() then
-				return
-			end
-			local link, text, button
-			if type(a) == "string" then
-				link, text, button = a, b, c
+		index = index + 1
+		local itemID = ids[index]
+		if not itemID then
+			local materials = ApplyScannedMaterials()
+			if saved > 0 then
+				WorthyPrint("Cached " .. saved .. " crate fill lists.")
 			else
-				link, text, button = b, c, d
+				WorthyPrint("No crate fill lists were read from that scan.")
 			end
-			if button == "RightButton" then
-				return
+			if materials > 0 then
+				WorthyPrint("Saved " .. materials .. " crafting materials from the scan.")
 			end
-			ShareWaylaidLink(text or link)
+			return
+		end
+		shareBusy = true
+		local link = ItemLinkFromID(itemID) or ("item:" .. itemID)
+		WithCrateBundles(link, function(bundles)
+			if #bundles > 0 then
+				saved = saved + 1
+			end
+			shareBusy = false
+			if C_Timer and C_Timer.After then
+				C_Timer.After(0.05, nextCrate)
+			else
+				nextCrate()
+			end
 		end)
 	end
-	if type(ContainerFrameItemButton_OnModifiedClick) == "function" then
-		hooksecurefunc("ContainerFrameItemButton_OnModifiedClick", onModified)
-	end
-	if type(ContainerFrameItemButtonMixin) == "table" and type(ContainerFrameItemButtonMixin.OnModifiedClick) == "function" then
-		hooksecurefunc(ContainerFrameItemButtonMixin, "OnModifiedClick", onModified)
-	end
+	nextCrate()
 end
+
 
 local hooked
 local function InstallHooks()
@@ -1480,7 +3194,6 @@ local function InstallHooks()
 		TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, AttachItemTooltip)
 	end
 	HookLegacy()
-	HookShareClicks()
 end
 
 local hookedOptionsFrames = {}
@@ -1674,7 +3387,10 @@ FinishWorthyScan = function()
 	AuctionworthyFillIDs = fillIDs
 	BeginWorthyCooldown()
 	RestoreDefaultScanButtons()
-	WorthyPrint("Scan finished. Cached " .. tostring(worthyScan.stored) .. " item names.")
+	WorthyPrint("Scan finished. Cached " .. tostring(worthyScan.stored) .. " Waylaid crates.")
+	if ReadScannedCrateFills then
+		ReadScannedCrateFills()
+	end
 end
 
 local function AuctionatorScanFrame()
@@ -1729,6 +3445,12 @@ local function StartWorthyScan()
 		end
 		WorthyPrint(msg or "Auctionator Full Scan is on cooldown.")
 		return
+	end
+	pendingCrateIDs = {}
+	scanItemIDs = {}
+	local removed = PruneFillIDs()
+	if removed > 0 then
+		WorthyPrint("Purged " .. removed .. " non-Waylaid names before the scan.")
 	end
 	worthyScan.stored = 0
 	worthyScan.total = 0
@@ -1825,9 +3547,18 @@ Auctionworthy:RegisterEvent("AUCTION_HOUSE_SHOW")
 Auctionworthy:RegisterEvent("AUCTION_HOUSE_CLOSED")
 
 function Auctionworthy:ADDON_LOADED(name)
+	if name == ADDON_NAME or name == "Prat-3.0" then
+		HookPratMessages()
+	end
 	if name == ADDON_NAME then
 		LoadOptions()
 		LoadFillIDs()
+		LoadCrateFills()
+		local dropped = DropDatabaseAdditions()
+		if dropped > 0 then
+			WorthyPrint("Removed " .. dropped .. " saved names already in the database.")
+		end
+		PruneFillIDs()
 		InstallHooks()
 		HookAuctionatorOptionsClose()
 		HookAuctionatorScan()
@@ -1843,8 +3574,19 @@ function Auctionworthy:ADDON_LOADED(name)
 	end
 end
 
+function Auctionworthy:CHAT_MSG_WHISPER(message, sender)
+	RememberWhisperItem(message, sender)
+end
+Auctionworthy:RegisterEvent("CHAT_MSG_WHISPER")
+
+function Auctionworthy:CHAT_MSG_GUILD(message, sender)
+	RememberGuildItem(message, sender)
+end
+Auctionworthy:RegisterEvent("CHAT_MSG_GUILD")
+
 function Auctionworthy:PLAYER_ENTERING_WORLD()
 	self:UnregisterEvent("PLAYER_ENTERING_WORLD")
+	HookPratMessages()
 	HookAuctionatorOptionsClose()
 	HookAuctionatorScan()
 	HookWorthyScanButton()
@@ -1863,7 +3605,7 @@ local function openOptionsPanel()
 
 	local template = BackdropTemplateMixin and "BackdropTemplate" or nil
 	local frame = CreateFrame("Frame", "AuctionworthyOptionsFrame", UIParent, template)
-	frame:SetSize(400, 530)
+	frame:SetSize(400, 650)
 	frame:SetPoint("CENTER")
 	frame:SetFrameStrata("DIALOG")
 	frame:SetClampedToScreen(true)
@@ -1973,11 +3715,42 @@ local function openOptionsPanel()
 		end
 	end)
 
+	local queryLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	queryLabel:SetPoint("TOPLEFT", 48, yOffset - 36)
+	queryLabel:SetText("Crate Query")
+
+	local queryBox = CreateFrame("EditBox", "AuctionworthyCrateQueryBox", frame, "InputBoxTemplate")
+	queryBox:SetSize(90, 20)
+	queryBox:SetPoint("LEFT", queryLabel, "RIGHT", 16, 0)
+	queryBox:SetAutoFocus(false)
+	queryBox:SetMaxLetters(CRATE_QUERY_MAX)
+	queryBox:SetFontObject(GameFontHighlight)
+	queryBox:SetText(CrateQueryPrefix())
+	local function CommitCrateQuery(box)
+		options.crateQuery = StoredCrateQuery(box:GetText())
+		SaveOptions()
+		box:SetText(CrateQueryPrefix())
+	end
+	queryBox:SetScript("OnEditFocusGained", function(self)
+		self:HighlightText()
+	end)
+	queryBox:SetScript("OnEnterPressed", function(self)
+		CommitCrateQuery(self)
+		self:ClearFocus()
+	end)
+	queryBox:SetScript("OnEscapePressed", function(self)
+		self:SetText(CrateQueryPrefix())
+		self:ClearFocus()
+	end)
+	queryBox:SetScript("OnEditFocusLost", function(self)
+		CommitCrateQuery(self)
+	end)
+
 	local shareNote = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-	shareNote:SetPoint("TOPLEFT", 48, yOffset - 32)
+	shareNote:SetPoint("TOPLEFT", 48, yOffset - 68)
 	shareNote:SetWidth(320)
 	shareNote:SetJustifyH("LEFT")
-	shareNote:SetText("Hold that key and click a Waylaid crate in your bags or in chat. Posts the crate link, then the cheapest fill, to Raid, Party, or Say.")
+	shareNote:SetText("Hold that key and click a Waylaid crate in your bags, bank, or guild bank. Key-clicks are ignored in combat. Posts the crate link, then the cheapest fill, to Raid, Party, or Say. The same click in say, party, raid, or a loot line posts there too. A guild-chat crate whispers the person who posted it. A crate whispered to you whispers that person back. In guild, whisper, party, or raid, the Crate Query text plus one crate link whispers that player, including you, the cheapest fill and the empty crate's profit or loss. A link that is not a crate gets one whisper: AH it and the profit, or Vendor it: 1g 25s loss if posted on AH. A bind-on-pickup or quest item gets: Can not be posted on auction house, sorry.")
 
 	frame:SetScript("OnHide", function()
 		menu:Hide()
@@ -1994,6 +3767,147 @@ local function openOptionsPanel()
 	frame:Show()
 end
 
+function Auctionworthy:ModifierDown()
+	return ShareModifierDown()
+end
+
+function Auctionworthy:CrateQuery()
+	return CrateQueryPrefix()
+end
+
+function Auctionworthy:ClickDebug(text)
+	ClickDebug(text)
+end
+
+function Auctionworthy:PostCrate(link)
+	ShareWaylaidLink(link)
+end
+
+function Auctionworthy:WhisperCrate(link, who)
+	ShareWaylaidLink(link, who)
+end
+
+function Auctionworthy:ReadClick(chatFrame, link)
+	local line = FullChatLine(chatFrame, link)
+	if not line then
+		return
+	end
+	return ClassifyLine(line, link)
+end
+
+function Auctionworthy:EachChatClick(handler)
+	local function run(chatFrame, item)
+		if not Auctionworthy:ModifierDown() then
+			return
+		end
+		local kind, sender = Auctionworthy:ReadClick(chatFrame, item)
+		handler(kind, sender, item)
+	end
+	if type(HandleModifiedItemClick) == "function" then
+		hooksecurefunc("HandleModifiedItemClick", function(link)
+			run(nil, link)
+		end)
+	end
+	if type(ChatFrame_OnHyperlinkShow) == "function" then
+		hooksecurefunc("ChatFrame_OnHyperlinkShow", function(a, b, c, d)
+			local chatFrame, link, text, button
+			if type(a) == "string" then
+				link, text, button = a, b, c
+			else
+				chatFrame, link, text, button = a, b, c, d
+			end
+			if button == "RightButton" then
+				return
+			end
+			run(chatFrame, text or link)
+		end)
+	end
+end
+
+function Auctionworthy:Secret(value)
+	return Secret(value)
+end
+
+function Auctionworthy:ItemID(link)
+	return ItemIDFromLink(link)
+end
+
+function Auctionworthy:ItemLink(itemID)
+	return ItemLinkFromID(itemID)
+end
+
+function Auctionworthy:IsCrateName(name)
+	return IsWaylaidCrateName(name) and true or false
+end
+
+function Auctionworthy:CachedBundles(link)
+	return CachedCrateBundles(link)
+end
+
+function Auctionworthy:CheapestLine(bundles)
+	return CheapestFillLine(bundles)
+end
+
+function Auctionworthy:EmptyValueLine(link)
+	return EmptyCrateValueLine(link)
+end
+
+function Auctionworthy:IsCrateLink(link)
+	return IsCrateLink(link) and true or false
+end
+
+function Auctionworthy:ItemSellLine(link)
+	return ItemSellLine(link)
+end
+
+function Auctionworthy:ReplyItemSell(link, who)
+	WatchItemSell(link, who)
+end
+
+function Auctionworthy:ScanBusy()
+	if worthyScan.inProgress then
+		return true
+	end
+	return AuctionatorScanActive() and true or false
+end
+
+function Auctionworthy:ItemName(link)
+	local name, full = ItemInfo(link)
+	if Secret(name) then
+		name = nil
+	end
+	if Secret(full) then
+		full = nil
+	end
+	return name, full
+end
+
+function Auctionworthy:ReadBundles(link, callback)
+	WithCrateBundles(link, callback)
+end
+
+function Auctionworthy:WhenReady(link, callback)
+	WhenItemReady(link, callback)
+end
+
+function Auctionworthy:WhisperLine(text, who)
+	SendShareLine(text, "WHISPER", who)
+end
+
+function Auctionworthy:ShareIsBusy()
+	local now = GetTime and GetTime() or 0
+	return shareBusy or (now - lastShareAt) < 0.4
+end
+
+function Auctionworthy:LockShare()
+	lastShareAt = GetTime and GetTime() or 0
+	shareBusy = true
+end
+
+function Auctionworthy:ReleaseShare()
+	ReleaseShareLater()
+end
+
 SLASH_AUCTIONWORTHY1 = "/auctionworthy"
 SLASH_AUCTIONWORTHY2 = "/worthy"
 SlashCmdList["AUCTIONWORTHY"] = function(msg)
@@ -2002,10 +3916,24 @@ SlashCmdList["AUCTIONWORTHY"] = function(msg)
 		RefreshAuctionatorConfig(true)
 		return
 	end
+	if msg == "debug" then
+		if Auctionworthy.ToggleClickDebug then
+			Auctionworthy:ToggleClickDebug()
+		end
+		return
+	end
 	if msg == "help" then
 		print("|cff00ff00Auctionworthy-Forever:|r /worthy — options")
 		print("  /worthy refresh — re-read Auctionator undercut (no /reload)")
-		print("  Hold the share key and click a Waylaid crate to post the cheapest fill.")
+		if Auctionworthy.ToggleClickDebug then
+			print("  /worthy debug — toggle key-click debug lines for this session")
+		end
+		print("  Hold the share key and click a Waylaid crate in your bags, bank, or guild bank to post the cheapest fill. Key-clicks are ignored in combat.")
+		print("  Say, party, raid, and loot-link clicks post to Raid, Party, or Say.")
+		print("  A guild-chat crate whispers the person who posted it.")
+		print("  A crate whispered to you whispers that person back.")
+		print("  In guild, whisper, party, or raid, ?[crate] whispers you or that player the cheapest fill and empty-crate profit or loss.")
+		print("  Worthy Scan saves each crate's fill list, so ?[crate] can answer from that cache.")
 		return
 	end
 	openOptionsPanel()
