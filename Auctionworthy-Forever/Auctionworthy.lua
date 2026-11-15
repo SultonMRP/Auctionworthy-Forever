@@ -3698,7 +3698,7 @@ local function openOptionsPanel()
 
 	local template = BackdropTemplateMixin and "BackdropTemplate" or nil
 	local frame = CreateFrame("Frame", "AuctionworthyOptionsFrame", UIParent, template)
-	frame:SetSize(400, 650)
+	frame:SetSize(400, 480)
 	frame:SetPoint("CENTER")
 	frame:SetFrameStrata("DIALOG")
 	frame:SetClampedToScreen(true)
@@ -3726,7 +3726,7 @@ local function openOptionsPanel()
 	info:SetPoint("TOPLEFT", 20, -40)
 	info:SetJustifyH("LEFT")
 	info:SetWidth(360)
-	info:SetText("Tooltip lines from Auctionator prices. Hold Shift to price the stack you are on. /worthy refresh re-reads Auctionator settings.")
+	info:SetText("Auctionator prices on tooltips. Hold Shift for the stack you are on.")
 
 	local checkboxes = {
 		{ label = "Show Auction Costs", key = "showAuctionCosts" },
@@ -3739,7 +3739,7 @@ local function openOptionsPanel()
 		{ label = "Show Undercut", key = "showUndercut" },
 	}
 
-	local yOffset = -100
+	local yOffset = -72
 	for i, checkbox in ipairs(checkboxes) do
 		local cb = CreateFrame("CheckButton", "AuctionworthyOption" .. i, frame, "UICheckButtonTemplate")
 		cb:SetPoint("TOPLEFT", 20, yOffset)
@@ -3843,7 +3843,7 @@ local function openOptionsPanel()
 	shareNote:SetPoint("TOPLEFT", 48, yOffset - 68)
 	shareNote:SetWidth(320)
 	shareNote:SetJustifyH("LEFT")
-	shareNote:SetText("Hold that key and click a Waylaid crate in your bags, bank, or guild bank. Key-clicks are ignored in combat. Posts the crate link, then the cheapest fill, to Raid, Party, or Say. The same click in say, party, raid, or a loot line posts there too. A guild-chat crate whispers the person who posted it. A crate whispered to you whispers that person back. In guild, whisper, party, or raid, the Crate Query text plus one crate link whispers that player, including you, the cheapest fill and the empty crate's profit or loss. A link that is not a crate gets one whisper: AH it and the profit, or Vendor it: 1g 25s loss if posted on AH. A bind-on-pickup or quest item gets: Can not be posted on auction house, sorry.")
+	shareNote:SetText("Share key clicks a Waylaid crate. Query plus one item link replies with the price.")
 
 	frame:SetScript("OnHide", function()
 		menu:Hide()
