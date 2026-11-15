@@ -2,7 +2,7 @@
 ## Title: Auctionworthy-Forever
 ## Notes: Tooltip profit vs vendor using Auctionator prices. /auctionworthy or /worthy
 ## Author: spzilyk
-## Version: 1.1.77
+## Version: 1.1.80
 ## OptionalDeps: Auctionator, Prat-3.0
 ## SavedVariables: AuctionworthySavedOptions, AuctionworthyFillIDs, AuctionworthyCrateFills
 ## IconTexture: Interface\Icons\INV_Misc_Coin_01
@@ -15,3 +15,4 @@ Modules/auctionworthy-inv.lua
 Modules/auctionworthy-chat.lua
 Modules/auctionworthy-guild.lua
 Modules/auctionworthy-whisper.lua
+Modules/auctionworthy-sell.lua
