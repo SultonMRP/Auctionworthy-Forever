@@ -1839,19 +1839,112 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 	local marketUnit = emptyCrate and getFillAuctionPrice(itemLink, ItemIDFromLink(itemLink)) or getAuctionPrice(itemLink)
 	local auctionPrice = applyUndercut(marketUnit)
 	local marketPrice = marketUnit
-	stackSize = stackSize or 1
 
-	local isFullStack = IsShiftKeyDown() and stackSize > 1 and options.showFullStack
+	local function CurrentStackCount(tip)
+		if not tip or not tip.GetOwner then
+			return
+		end
+		local owner = tip:GetOwner()
+		if not owner or Secret(owner) then
+			return
+		end
+		local shown = owner.itemInfo
+		if type(shown) == "table" then
+			local count = shown.itemCount
+			if not Secret(count) then
+				count = tonumber(count)
+				if count and count > 0 then
+					return count
+				end
+			end
+		end
+		local slot
+		if owner.GetID then
+			slot = owner:GetID()
+		end
+		if Secret(slot) then
+			return
+		end
+		slot = tonumber(slot)
+		if not slot or slot < 1 then
+			return
+		end
+		local ownerName
+		if owner.GetName then
+			ownerName = owner:GetName()
+		end
+		if type(ownerName) == "string" and not Secret(ownerName) and ownerName:find("GuildBank", 1, true) and GetGuildBankItemInfo and GetCurrentGuildBankTab then
+			local tab = GetCurrentGuildBankTab()
+			if not Secret(tab) and tab then
+				local _, count = GetGuildBankItemInfo(tab, slot)
+				if not Secret(count) then
+					count = tonumber(count)
+					if count and count > 0 then
+						return count
+					end
+				end
+			end
+			return
+		end
+		local bag
+		if owner.GetBagID then
+			bag = owner:GetBagID()
+		end
+		if bag == nil and owner.GetParent then
+			local parent = owner:GetParent()
+			if parent and parent.GetID then
+				bag = parent:GetID()
+			end
+		end
+		if Secret(bag) or bag == nil then
+			return
+		end
+		bag = tonumber(bag)
+		if bag == nil then
+			return
+		end
+		if C_Container and C_Container.GetContainerItemInfo then
+			local info = C_Container.GetContainerItemInfo(bag, slot)
+			if type(info) == "table" then
+				local count = info.stackCount
+				if not Secret(count) then
+					count = tonumber(count)
+					if count and count > 0 then
+						return count
+					end
+				end
+			end
+		end
+		if GetContainerItemInfo then
+			local _, count = GetContainerItemInfo(bag, slot)
+			if not Secret(count) then
+				count = tonumber(count)
+				if count and count > 0 then
+					return count
+				end
+			end
+		end
+	end
+
+	local shiftDown = IsShiftKeyDown and IsShiftKeyDown()
+	local stackCount = 1
+	if not Secret(shiftDown) and shiftDown and options.showFullStack then
+		local current = CurrentStackCount(tooltip)
+		if current and current > 1 then
+			stackCount = current
+		end
+	end
 	local auctionCosts = calculateAuctionCosts(vendorPrice)
-	local stackMult = 1
+	if stackCount > 1 then
+		auctionCosts = auctionCosts * stackCount
+		marketPrice = marketPrice and marketPrice * stackCount or nil
+		auctionPrice = auctionPrice and auctionPrice * stackCount or nil
+		vendorPrice = vendorPrice * stackCount
+	end
 
-	if isFullStack then
-		stackMult = stackSize
-		auctionCosts = auctionCosts * stackSize
-		marketPrice = marketPrice and marketPrice * stackSize or nil
-		auctionPrice = auctionPrice and auctionPrice * stackSize or nil
-		vendorPrice = vendorPrice * stackSize
-		tooltip:AddLine("|cFFFFA500Calculations for Full Stack (" .. stackSize .. "x)|r", 1, 0.82, 0, true)
+	local stackNote = ""
+	if stackCount > 1 then
+		stackNote = " (x" .. stackCount .. ")"
 	end
 
 	if auctionPrice then
@@ -1864,14 +1957,14 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 		end
 		if profit > 0 then
 			if options.showProfitOptions then
-				tooltip:AddLine("Profit: " .. formatGold(profit), 0, 1, 0, true)
+				tooltip:AddLine("Profit: " .. formatGold(profit) .. stackNote, 0, 1, 0, true)
 			end
 			if options.showDecisionText then
 				tooltip:AddLine("Auction it!", 0, 1, 0, true)
 			end
 		else
 			if options.showProfitOptions then
-				tooltip:AddLine("Loss: " .. formatGold(-profit), 1, 0, 0, true)
+				tooltip:AddLine("Loss: " .. formatGold(-profit) .. stackNote, 1, 0, 0, true)
 			end
 			if options.showDecisionText then
 				tooltip:AddLine("Sell to vendor!", 1, 0, 0, true)
@@ -1882,7 +1975,7 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 	end
 
 	if options.showUndercut then
-		local line = undercutLine(marketUnit, stackMult)
+		local line = undercutLine(marketUnit, stackCount)
 		if line then
 			tooltip:AddLine(line, 0.65, 0.85, 1, true)
 		end
@@ -3633,14 +3726,14 @@ local function openOptionsPanel()
 	info:SetPoint("TOPLEFT", 20, -40)
 	info:SetJustifyH("LEFT")
 	info:SetWidth(360)
-	info:SetText("Tooltip lines from Auctionator prices. Shift shows a full stack when that option is on. /worthy refresh re-reads Auctionator settings.")
+	info:SetText("Tooltip lines from Auctionator prices. Hold Shift to price the stack you are on. /worthy refresh re-reads Auctionator settings.")
 
 	local checkboxes = {
 		{ label = "Show Auction Costs", key = "showAuctionCosts" },
 		{ label = "Show Auction Price", key = "showAuctionPrice" },
 		{ label = "Show Profit/Loss Options", key = "showProfitOptions" },
 		{ label = "Show No Auction Data", key = "showNoAuctionData" },
-		{ label = "Show Full Stack Calculations", key = "showFullStack" },
+		{ label = "Shift prices the current stack", key = "showFullStack" },
 		{ label = "Show Decision Text", key = "showDecisionText" },
 		{ label = "Apply Auctionator undercut", key = "applyUndercut" },
 		{ label = "Show Undercut", key = "showUndercut" },
