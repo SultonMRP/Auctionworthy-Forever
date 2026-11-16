@@ -2700,6 +2700,48 @@ local function LineIsLoot(line)
 	return lower:find("receive loot", 1, true) or lower:find("receives loot", 1, true)
 end
 
+-- "Vaspera Rex receives loot: [item]". "You receive loot" has no other player.
+-- Names on this client are "First Surname", so the whole prefix is the whisper target.
+local function LooterFromLine(line)
+	if type(line) ~= "string" or Secret(line) then
+		return
+	end
+	local lower = strlower(line)
+	local at = lower:find("receives loot", 1, true)
+	if not at then
+		return
+	end
+	local head = line:sub(1, at - 1)
+	local linked = head:match("|Hplayer:([^|]+)|h")
+	if type(linked) == "string" and linked ~= "" and not Secret(linked) then
+		local name = linked:match("^(.-):%d+:") or linked:match("^([^:]+)")
+		if type(name) == "string" and name ~= "" and not Secret(name) then
+			return strtrim(name)
+		end
+	end
+	local plain = head:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|cn[^|]*", ""):gsub("|r", "")
+	plain = plain:gsub("|H.-|h", ""):gsub("|h", "")
+	plain = strtrim(plain)
+	plain = plain:gsub("^%d%d?:%d%d:%d%d%s*", "")
+	plain = plain:gsub("^%d%d?:%d%d%s*", "")
+	plain = strtrim(plain)
+	for _ = 1, 3 do
+		local tag, rest = plain:match("^%[([^%]]+)%]%s*(.+)$")
+		if not tag or tag:find(" ", 1, true) or not rest then
+			break
+		end
+		plain = strtrim(rest)
+	end
+	local wrapped = plain:match("^%[([^%]]+)%]$")
+	if wrapped then
+		plain = strtrim(wrapped)
+	end
+	if plain == "" or Secret(plain) or #plain > 40 or plain:find("|", 1, true) or plain:find("%", 1, true) then
+		return
+	end
+	return plain
+end
+
 local function LineIsOutgoingWhisper(line)
 	return HasText(line, "[W To]") or HasText(line, ":WHISPER_INFORM")
 end
@@ -2714,12 +2756,17 @@ local function LineIsPublic(line)
 	return HasText(line, "[S]") or HasText(line, "[P]") or HasText(line, "[R]")
 end
 
--- GUILD and incoming WHISPER keep the sender. SAY, PARTY, RAID, and LOOT do not.
+-- GUILD, incoming WHISPER, and another player's LOOT keep the sender.
+-- SAY, PARTY, RAID, and your own loot do not.
 ClassifyLine = function(line, link)
 	if LineIsOutgoingWhisper(line) then
 		return "WHISPER_OUT"
 	end
 	if LineIsLoot(line) then
+		local looter = LooterFromLine(line)
+		if looter and not IsLocalPlayer(looter) then
+			return "LOOT", looter
+		end
 		return "LOOT"
 	end
 	local pratSender, pratChannel = PratOwner(link, line)
@@ -3195,12 +3242,10 @@ local function ShareWaylaidLink(link, whisperTo)
 			local second = CheapestFillLine(bundles)
 			local target = shareWhisperTo
 			if type(target) == "string" and target ~= "" and not Secret(target) then
-				local reply = second
-				if type(name) == "string" and name ~= "" and not Secret(name) then
-					local withName = name .. ": " .. second
-					if #withName <= 255 then
-						reply = withName
-					end
+				local reply = line1 .. ": " .. second
+				if #reply > 255 then
+					SendShareLine(line1, "WHISPER", target)
+					reply = second
 				end
 				SendShareLine(reply, "WHISPER", target)
 			else
@@ -4022,7 +4067,8 @@ SlashCmdList["AUCTIONWORTHY"] = function(msg)
 			print("  /worthy debug — toggle key-click debug lines for this session")
 		end
 		print("  Hold the share key and click a Waylaid crate in your bags, bank, or guild bank to post the cheapest fill. Key-clicks are ignored in combat.")
-		print("  Say, party, raid, and loot-link clicks post to Raid, Party, or Say.")
+		print("  Say, party, and raid clicks post to Raid, Party, or Say.")
+		print("  Your own loot link posts the same way. Someone else's loot link whispers that player.")
 		print("  A guild-chat crate whispers the person who posted it.")
 		print("  A crate whispered to you whispers that person back.")
 		print("  In guild, whisper, party, or raid, ?[crate] whispers you or that player the cheapest fill and empty-crate profit or loss.")

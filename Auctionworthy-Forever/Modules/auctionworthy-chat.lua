@@ -1,4 +1,5 @@
--- Say, party, raid, and loot links. Posts to Raid, Party, or Say.
+-- Say, party, raid, and your own loot links. Posts to Raid, Party, or Say.
+-- Someone else's loot link whispers that player the cheapest fill.
 -- Crate Query plus one crate link in party or raid whispers that person the cheapest fill, then the empty crate value.
 -- Any other item link whispers AH it and the profit, or Vendor it and the loss.
 -- Guild and incoming whispers are other modules.
@@ -19,8 +20,13 @@ local function Install()
 		return
 	end
 	installed = true
-	Auctionworthy:EachChatClick(function(kind, _, link)
+	Auctionworthy:EachChatClick(function(kind, sender, link)
 		if not POST[kind] then
+			return
+		end
+		if kind == "LOOT" and type(sender) == "string" and sender ~= "" then
+			Auctionworthy:ClickDebug("loot " .. sender)
+			Auctionworthy:WhisperCrate(link, sender)
 			return
 		end
 		Auctionworthy:ClickDebug("chat " .. kind)
