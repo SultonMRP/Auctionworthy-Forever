@@ -1,7 +1,7 @@
 -- Say, party, raid, and your own loot links. Posts to Raid, Party, or Say.
 -- Someone else's loot link whispers that player the cheapest fill.
 -- Crate Query plus one crate link in party or raid whispers that person the cheapest fill, then the empty crate value.
--- Any other item link whispers AH it and the profit, or Vendor it and the loss.
+-- Any other item link whispers AH it and the profit, Vendor it and the loss, or non-vendorable when it has no sell price.
 -- Guild and incoming whispers are other modules.
 
 local POST = {

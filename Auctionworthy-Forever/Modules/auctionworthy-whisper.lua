@@ -1,7 +1,7 @@
 -- Incoming whispers only.
 -- Alt-click on a whispered crate whispers that person the cheapest fill.
 -- Crate Query plus one crate link whispers the cheapest fill, then the empty crate's profit or loss.
--- Any other item link whispers AH it and the profit, or Vendor it and the loss.
+-- Any other item link whispers AH it and the profit, Vendor it and the loss, or non-vendorable when it has no sell price.
 
 local installed
 local function Install()

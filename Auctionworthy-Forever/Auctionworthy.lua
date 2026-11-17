@@ -266,6 +266,10 @@ local function formatChatMoney(value)
 	return table.concat(parts, " ")
 end
 
+function Auctionworthy:FormatChatMoney(value)
+	return formatChatMoney(value)
+end
+
 -- Other-addon globals / SVs may be missing (Auctionator off, or first run before Auctionator.lua exists).
 local function SafeGlobal(name)
 	if type(name) ~= "string" or type(_G) ~= "table" then
@@ -536,9 +540,11 @@ local function applyUndercut(unitPrice)
 	return ComputePosting(unitPrice)
 end
 
--- Classic-style "what it costs to auction vs vendor": deposit-ish + listing overhead.
-local function calculateAuctionCosts(vendorPrice)
-	return math.floor(vendorPrice * 0.6) + vendorPrice + math.floor(vendorPrice * 0.05)
+local function SellVerdict(auctionPrice, vendorPrice)
+	if (tonumber(vendorPrice) or 0) > 0 then
+		return Auctionworthy:VendorVerdict(auctionPrice, vendorPrice)
+	end
+	return Auctionworthy:NonVendorVerdict(auctionPrice, vendorPrice)
 end
 
 local function ItemInfo(itemLink)
@@ -1824,9 +1830,6 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 		if bindType == 1 or bindType == 4 then
 			return false
 		end
-		if not vendorPrice or vendorPrice <= 0 then
-			return false
-		end
 	elseif Secret(vendorPrice) then
 		vendorPrice = 0
 	end
@@ -1838,7 +1841,6 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 
 	local marketUnit = emptyCrate and getFillAuctionPrice(itemLink, ItemIDFromLink(itemLink)) or getAuctionPrice(itemLink)
 	local auctionPrice = applyUndercut(marketUnit)
-	local marketPrice = marketUnit
 
 	local function CurrentStackCount(tip)
 		if not tip or not tip.GetOwner then
@@ -1934,40 +1936,38 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 			stackCount = current
 		end
 	end
-	local auctionCosts = calculateAuctionCosts(vendorPrice)
-	if stackCount > 1 then
-		auctionCosts = auctionCosts * stackCount
-		marketPrice = marketPrice and marketPrice * stackCount or nil
-		auctionPrice = auctionPrice and auctionPrice * stackCount or nil
-		vendorPrice = vendorPrice * stackCount
-	end
-
 	local stackNote = ""
 	if stackCount > 1 then
 		stackNote = " (x" .. stackCount .. ")"
 	end
 
-	if auctionPrice then
-		local profit = auctionPrice - auctionCosts
+	local verdict = auctionPrice and SellVerdict(auctionPrice, vendorPrice)
+	if verdict and stackCount > 1 then
+		verdict.costs = verdict.costs * stackCount
+		verdict.auctionPrice = verdict.auctionPrice * stackCount
+		verdict.profit = verdict.profit * stackCount
+	end
+
+	if verdict then
 		if options.showAuctionCosts then
-			tooltip:AddLine("Auction Costs: " .. formatGold(auctionCosts), 1, 0.82, 0, true)
+			tooltip:AddLine("Auction Costs: " .. formatGold(verdict.costs), 1, 0.82, 0, true)
 		end
 		if options.showAuctionPrice then
-			tooltip:AddLine("Auction Price: " .. formatGold(auctionPrice), 1, 0.82, 0, true)
+			tooltip:AddLine("Auction Price: " .. formatGold(verdict.auctionPrice), 1, 0.82, 0, true)
 		end
-		if profit > 0 then
+		if verdict.profit > 0 then
 			if options.showProfitOptions then
-				tooltip:AddLine("Profit: " .. formatGold(profit) .. stackNote, 0, 1, 0, true)
+				tooltip:AddLine("Profit: " .. formatGold(verdict.profit) .. stackNote, 0, 1, 0, true)
 			end
 			if options.showDecisionText then
-				tooltip:AddLine("Auction it!", 0, 1, 0, true)
+				tooltip:AddLine(verdict.decisionText, verdict.red, verdict.green, verdict.blue, true)
 			end
 		else
 			if options.showProfitOptions then
-				tooltip:AddLine("Loss: " .. formatGold(-profit) .. stackNote, 1, 0, 0, true)
+				tooltip:AddLine("Loss: " .. formatGold(-verdict.profit) .. stackNote, 1, 0, 0, true)
 			end
 			if options.showDecisionText then
-				tooltip:AddLine("Sell to vendor!", 1, 0, 0, true)
+				tooltip:AddLine(verdict.decisionText, verdict.red, verdict.green, verdict.blue, true)
 			end
 		end
 	elseif options.showNoAuctionData then
@@ -2963,11 +2963,14 @@ local function EmptyCrateValueLine(itemLink)
 	if not auctionPrice then
 		return "Empty AH value: No Auction Data"
 	end
-	local profit = auctionPrice - calculateAuctionCosts(vendorPrice)
-	if profit > 0 then
-		return "Empty AH value: Profit: " .. formatChatMoney(profit)
+	local verdict = SellVerdict(auctionPrice, vendorPrice)
+	if not verdict then
+		return "Empty AH value: No Auction Data"
 	end
-	return "Empty AH value: Loss: " .. formatChatMoney(-profit)
+	if verdict.profit > 0 then
+		return "Empty AH value: Profit: " .. formatChatMoney(verdict.profit)
+	end
+	return "Empty AH value: Loss: " .. formatChatMoney(-verdict.profit)
 end
 
 local function IsKnownCrateID(itemID)
@@ -3019,7 +3022,7 @@ local function SellItemFacts(link)
 	return true, vendorPrice, classID, bindType
 end
 
--- Same cutoff as the item tooltip: Auction it, or sell to the vendor.
+-- Same cutoff as the item tooltip: Auction it, sell to the vendor, or non-vendorable.
 -- The second return is true when the item is not loaded yet.
 local function ItemSellLine(itemLink)
 	local loaded, vendorPrice, classID, bindType = SellItemFacts(itemLink)
@@ -3059,21 +3062,17 @@ local function ItemSellLine(itemLink)
 		return "No Auction Data"
 	end
 	vendorPrice = tonumber(vendorPrice) or 0
-	if vendorPrice <= 0 then
-		return "No Auction Data"
-	end
 	local id = ItemIDFromLink(itemLink) or ItemIDFromLink(pricedLink)
 	local marketUnit = getAuctionPrice(itemLink) or getAuctionPrice(pricedLink) or getAuctionPriceByItemID(id)
 	local auctionPrice = applyUndercut(marketUnit)
 	if type(auctionPrice) ~= "number" then
 		return "No Auction Data"
 	end
-	local auctionCosts = calculateAuctionCosts(vendorPrice)
-	local profit = auctionPrice - auctionCosts
-	if profit > 0 then
-		return "AH it: " .. formatChatMoney(profit)
+	local verdict = SellVerdict(auctionPrice, vendorPrice)
+	if type(verdict) ~= "table" or type(verdict.chatLine) ~= "string" then
+		return "No Auction Data"
 	end
-	return "Vendor it: " .. formatChatMoney(-profit) .. " loss if posted on AH"
+	return verdict.chatLine
 end
 
 local pendingItemSells = {}
