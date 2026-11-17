@@ -2920,7 +2920,71 @@ local function WhenItemReady(link, callback)
 	end
 end
 
-local function CheapestFillLine(bundles)
+local function QuestionQty(text)
+	if type(text) ~= "string" then
+		return
+	end
+	text = strtrim(text)
+	if text == "" then
+		return 1
+	end
+	local n = tonumber(text:match("(%d+)"))
+	if not n or n < 1 then
+		return
+	end
+	if n > 1000 then
+		n = 1000
+	end
+	return n
+end
+
+-- Query plus one item link. A number after the link is the stack size (x10, *10, or 10).
+local function ParseQuestionLink(message)
+	if type(message) ~= "string" or message == "" or Secret(message) then
+		return
+	end
+	local body = strtrim(message)
+	local query = CrateQueryPrefix()
+	if type(query) ~= "string" or query == "" or Secret(query) then
+		query = "?"
+	end
+	if strlower(body:sub(1, #query)) ~= strlower(query) then
+		return
+	end
+	local rest = strtrim(body:sub(#query + 1))
+	if rest == "" or Secret(rest) then
+		return
+	end
+	local _, count = rest:gsub("|Hitem:", "")
+	if count == 0 then
+		_, count = rest:gsub("item:%d+", "")
+	end
+	if count ~= 1 then
+		return
+	end
+	local plain = rest:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|cn[^|]*", ""):gsub("|r", "")
+	plain = plain:gsub("|H.-|h", ""):gsub("|h", ""):gsub("%[.-%]", ""):gsub("item:%d+", "")
+	local qty = QuestionQty(plain)
+	if not qty then
+		return
+	end
+	local link = rest:match("(|cn[^|]*|Hitem:[^|]-|h%[.-%]|h|r)")
+		or rest:match("(|c%x%x%x%x%x%x%x%x|Hitem:[^|]-|h%[.-%]|h|r)")
+		or rest:match("(|Hitem:[^|]-|h%[.-%]|h)")
+	if type(link) == "string" and link ~= "" and not Secret(link) then
+		return link, qty
+	end
+	local itemID = tonumber(rest:match("item:(%d+)"))
+	if itemID and itemID > 0 then
+		return "item:" .. itemID, qty
+	end
+end
+
+local function CheapestFillLine(bundles, qty)
+	qty = tonumber(qty) or 1
+	if qty < 1 then
+		qty = 1
+	end
 	local best
 	for _, bundle in ipairs(bundles) do
 		local itemLink = FillItemLink(bundle.name, bundle.itemID)
@@ -2940,6 +3004,10 @@ local function CheapestFillLine(bundles)
 	if not best then
 		return "Cheapest: No auction data"
 	end
+	if qty > 1 then
+		best.qty = best.qty * qty
+		best.total = best.total * qty
+	end
 	local shown = best.name and ("[" .. best.name .. "]") or "[item]"
 	if type(best.link) == "string" and best.link:find("|H", 1, true) and not Secret(best.link) then
 		shown = best.link
@@ -2952,7 +3020,11 @@ local function CheapestFillLine(bundles)
 end
 
 -- Same profit or loss as the empty-crate tooltip, after Auctionator undercut.
-local function EmptyCrateValueLine(itemLink)
+local function EmptyCrateValueLine(itemLink, qty)
+	qty = tonumber(qty) or 1
+	if qty < 1 then
+		qty = 1
+	end
 	local _, _, _, _, _, _, _, _, _, _, vendorPrice = ItemInfo(itemLink)
 	if Secret(vendorPrice) then
 		vendorPrice = 0
@@ -2967,10 +3039,14 @@ local function EmptyCrateValueLine(itemLink)
 	if not verdict then
 		return "Empty AH value: No Auction Data"
 	end
-	if verdict.profit > 0 then
-		return "Empty AH value: Profit: " .. formatChatMoney(verdict.profit)
+	if qty > 1 then
+		verdict.profit = verdict.profit * qty
 	end
-	return "Empty AH value: Loss: " .. formatChatMoney(-verdict.profit)
+	local note = qty > 1 and (" (x" .. qty .. ")") or ""
+	if verdict.profit > 0 then
+		return "Empty AH value: Profit: " .. formatChatMoney(verdict.profit) .. note
+	end
+	return "Empty AH value: Loss: " .. formatChatMoney(-verdict.profit) .. note
 end
 
 local function IsKnownCrateID(itemID)
@@ -3024,7 +3100,11 @@ end
 
 -- Same cutoff as the item tooltip: Auction it, sell to the vendor, or non-vendorable.
 -- The second return is true when the item is not loaded yet.
-local function ItemSellLine(itemLink)
+local function ItemSellLine(itemLink, qty)
+	qty = tonumber(qty) or 1
+	if qty < 1 then
+		qty = 1
+	end
 	local loaded, vendorPrice, classID, bindType = SellItemFacts(itemLink)
 	local pricedLink = itemLink
 	if not loaded then
@@ -3072,16 +3152,19 @@ local function ItemSellLine(itemLink)
 	if type(verdict) ~= "table" or type(verdict.chatLine) ~= "string" then
 		return "No Auction Data"
 	end
+	if qty > 1 then
+		return "AH it: " .. formatChatMoney(auctionPrice * qty) .. " (x" .. qty .. ")"
+	end
 	return verdict.chatLine
 end
 
 local pendingItemSells = {}
 
-local function DeliverItemSell(link, who)
+local function DeliverItemSell(link, who, qty)
 	if Auctionworthy.ScanBusy and Auctionworthy:ScanBusy() then
 		return true
 	end
-	local line, waiting = ItemSellLine(link)
+	local line, waiting = ItemSellLine(link, qty)
 	if waiting then
 		return false
 	end
@@ -3100,7 +3183,7 @@ local function FlushItemSells(itemID)
 	local held = rows.item
 	local again
 	for i = 1, #rows do
-		if rows[i] and not DeliverItemSell(rows[i].link, rows[i].who) then
+		if rows[i] and not DeliverItemSell(rows[i].link, rows[i].who, rows[i].qty) then
 			again = again or {}
 			again[#again + 1] = rows[i]
 		end
@@ -3111,8 +3194,8 @@ local function FlushItemSells(itemID)
 	end
 end
 
-local function WatchItemSell(link, who)
-	if DeliverItemSell(link, who) then
+local function WatchItemSell(link, who, qty)
+	if DeliverItemSell(link, who, qty) then
 		return
 	end
 	local id = ItemIDFromLink(link)
@@ -3125,7 +3208,7 @@ local function WatchItemSell(link, who)
 		bucket = {}
 		pendingItemSells[id] = bucket
 	end
-	bucket[#bucket + 1] = { link = link, who = who }
+	bucket[#bucket + 1] = { link = link, who = who, qty = qty }
 	if Item and Item.CreateFromItemLink then
 		local ok, item = pcall(Item.CreateFromItemLink, Item, link)
 		if ok and item and item.ContinueOnItemLoad then
@@ -3887,7 +3970,7 @@ local function openOptionsPanel()
 	shareNote:SetPoint("TOPLEFT", 48, yOffset - 68)
 	shareNote:SetWidth(320)
 	shareNote:SetJustifyH("LEFT")
-	shareNote:SetText("Share key clicks a Waylaid crate. Query plus one item link replies with the price.")
+	shareNote:SetText("Share key clicks a Waylaid crate. Query plus one item link replies with the price. A number after the link (x10, *10, or 10) is that many.")
 
 	frame:SetScript("OnHide", function()
 		menu:Hide()
@@ -3981,24 +4064,28 @@ function Auctionworthy:CachedBundles(link)
 	return CachedCrateBundles(link)
 end
 
-function Auctionworthy:CheapestLine(bundles)
-	return CheapestFillLine(bundles)
+function Auctionworthy:CheapestLine(bundles, qty)
+	return CheapestFillLine(bundles, qty)
 end
 
-function Auctionworthy:EmptyValueLine(link)
-	return EmptyCrateValueLine(link)
+function Auctionworthy:EmptyValueLine(link, qty)
+	return EmptyCrateValueLine(link, qty)
 end
 
 function Auctionworthy:IsCrateLink(link)
 	return IsCrateLink(link) and true or false
 end
 
-function Auctionworthy:ItemSellLine(link)
-	return ItemSellLine(link)
+function Auctionworthy:ItemSellLine(link, qty)
+	return ItemSellLine(link, qty)
 end
 
-function Auctionworthy:ReplyItemSell(link, who)
-	WatchItemSell(link, who)
+function Auctionworthy:ReplyItemSell(link, who, qty)
+	WatchItemSell(link, who, qty)
+end
+
+function Auctionworthy:QuestionLink(message)
+	return ParseQuestionLink(message)
 end
 
 function Auctionworthy:ScanBusy()
