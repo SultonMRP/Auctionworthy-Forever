@@ -1,5 +1,5 @@
 -- Items with no vendor sell price.
--- Same profit and loss math as a vendor item. A loss says non-vendorable.
+-- Same sold-listing profit as a vendor item (deposit is 0). A loss says non-vendorable.
 
 function Auctionworthy:NonVendorVerdict(auctionPrice, vendorPrice)
 	local verdict = Auctionworthy:VendorVerdict(auctionPrice, vendorPrice)

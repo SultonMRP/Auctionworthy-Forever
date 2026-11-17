@@ -1946,18 +1946,26 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 		verdict.costs = verdict.costs * stackCount
 		verdict.auctionPrice = verdict.auctionPrice * stackCount
 		verdict.profit = verdict.profit * stackCount
+		if verdict.deposit then
+			verdict.deposit = verdict.deposit * stackCount
+		end
 	end
 
 	if verdict then
 		if options.showAuctionCosts then
 			tooltip:AddLine("Auction Costs: " .. formatGold(verdict.costs), 1, 0.82, 0, true)
+			local deposit = tonumber(verdict.deposit) or 0
+			if deposit > 0 then
+				tooltip:AddLine("Deposit: " .. formatGold(deposit), 1, 0.82, 0, true)
+			end
 		end
 		if options.showAuctionPrice then
 			tooltip:AddLine("Auction Price: " .. formatGold(verdict.auctionPrice), 1, 0.82, 0, true)
 		end
 		if verdict.profit > 0 then
 			if options.showProfitOptions then
-				tooltip:AddLine("Profit: " .. formatGold(verdict.profit) .. stackNote, 0, 1, 0, true)
+				local soldNote = stackCount > 1 and (" (if sold, x" .. stackCount .. ")") or " (if sold)"
+				tooltip:AddLine("Profit: " .. formatGold(verdict.profit) .. soldNote, 0, 1, 0, true)
 			end
 			if options.showDecisionText then
 				tooltip:AddLine(verdict.decisionText, verdict.red, verdict.green, verdict.blue, true)
@@ -3042,11 +3050,12 @@ local function EmptyCrateValueLine(itemLink, qty)
 	if qty > 1 then
 		verdict.profit = verdict.profit * qty
 	end
-	local note = qty > 1 and (" (x" .. qty .. ")") or ""
+	local soldNote = qty > 1 and (" (if sold, x" .. qty .. ")") or " (if sold)"
+	local lossNote = qty > 1 and (" (x" .. qty .. ")") or ""
 	if verdict.profit > 0 then
-		return "Empty AH value: Profit: " .. formatChatMoney(verdict.profit) .. note
+		return "Empty AH value: Profit: " .. formatChatMoney(verdict.profit) .. soldNote
 	end
-	return "Empty AH value: Loss: " .. formatChatMoney(-verdict.profit) .. note
+	return "Empty AH value: Loss: " .. formatChatMoney(-verdict.profit) .. lossNote
 end
 
 local function IsKnownCrateID(itemID)
@@ -3153,7 +3162,7 @@ local function ItemSellLine(itemLink, qty)
 		return "No Auction Data"
 	end
 	if qty > 1 then
-		return "AH it: " .. formatChatMoney(auctionPrice * qty) .. " (x" .. qty .. ")"
+		return "AH it: " .. formatChatMoney(auctionPrice * qty) .. " (if sold, x" .. qty .. ")"
 	end
 	return verdict.chatLine
 end
