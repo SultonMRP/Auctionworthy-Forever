@@ -1011,6 +1011,7 @@ local worthyScan = {
 }
 local FinishWorthyScan
 local RestoreDefaultScanButtons
+local ResetAuctionBrowseSoon
 local SetWorthyScanButtonEnabled
 local WorthyPrint
 
@@ -1145,6 +1146,7 @@ local function HookAuctionatorScan()
 					worthyScan.mode = nil
 					RestoreDefaultScanButtons()
 					WorthyPrint("Auctionator Full Scan failed.")
+					ResetAuctionBrowseSoon()
 					return
 				end
 			elseif what == "prices" then
@@ -3608,6 +3610,60 @@ RestoreDefaultScanButtons = function()
 	SyncScanButtons()
 end
 
+-- Worthy Scan fills Browse with the whole AH. Reset it so switching tabs
+-- still shows a usable list without closing the window.
+local function ResetAuctionBrowse()
+	local house = SafeGlobal("AuctionHouseFrame")
+	if type(house) ~= "table" or not house.IsShown or not house:IsShown() then
+		return
+	end
+	local browse = house.BrowseResultsFrame
+	pcall(function()
+		if type(browse) == "table" then
+			if browse.Reset then
+				browse:Reset()
+			end
+			local list = browse.ItemList
+			if type(list) == "table" then
+				if list.SetCustomError then
+					list:SetCustomError(nil)
+				end
+				if list.DirtyList then
+					list:DirtyList()
+				end
+				if list.Reset then
+					list:Reset()
+				end
+				if list.RefreshScrollFrame then
+					list:RefreshScrollFrame()
+				end
+			end
+		end
+	end)
+	local query = {
+		searchString = "zzqxxworthy",
+		sorts = {},
+		filters = {},
+		itemClassFilters = {},
+	}
+	local addon = AuctionatorAddon()
+	if addon and addon.AH and addon.AH.SendBrowseQuery then
+		pcall(addon.AH.SendBrowseQuery, query)
+		return
+	end
+	if C_AuctionHouse and C_AuctionHouse.SendBrowseQuery then
+		pcall(C_AuctionHouse.SendBrowseQuery, query)
+	end
+end
+
+ResetAuctionBrowseSoon = function()
+	if C_Timer and C_Timer.After then
+		C_Timer.After(0.3, ResetAuctionBrowse)
+		return
+	end
+	ResetAuctionBrowse()
+end
+
 FinishWorthyScan = function()
 	worthyScan.inProgress = false
 	worthyScan.processing = false
@@ -3620,6 +3676,7 @@ FinishWorthyScan = function()
 	if ReadScannedCrateFills then
 		ReadScannedCrateFills()
 	end
+	ResetAuctionBrowseSoon()
 end
 
 local function AuctionatorScanFrame()
