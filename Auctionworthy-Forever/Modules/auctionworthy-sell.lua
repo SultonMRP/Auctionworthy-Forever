@@ -86,7 +86,7 @@ local function Hook()
 	hooksecurefunc(mixin, "SetItemInfo", Paint)
 end
 
-local ticker = C_Timer.NewTicker(0.5, RefreshDirty)
+local ticker = C_Timer and C_Timer.NewTicker and C_Timer.NewTicker(0.5, RefreshDirty)
 
 local frame = CreateFrame("Frame")
 frame:RegisterEvent("PLAYER_LOGIN")

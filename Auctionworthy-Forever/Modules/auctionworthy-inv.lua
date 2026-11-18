@@ -59,7 +59,9 @@ local function Post(link)
 	if type(link) ~= "string" or link == "" then
 		return
 	end
-	Auctionworthy:ClickDebug("inventory")
+	if Auctionworthy.ReportClick then
+		Auctionworthy:ClickDebug("inventory")
+	end
 	Auctionworthy:PostCrate(link)
 end
 
@@ -92,33 +94,27 @@ end
 
 local hooked = {}
 
+local function HookClick(key, mixin, mixinFn, globalName, handler)
+	if hooked[key] then
+		return
+	end
+	if type(mixin) == "table" and type(mixin[mixinFn]) == "function" then
+		hooksecurefunc(mixin, mixinFn, handler)
+		hooked[key] = true
+		return
+	end
+	if type(_G[globalName]) == "function" then
+		hooksecurefunc(globalName, handler)
+		hooked[key] = true
+	end
+end
+
 local function Install()
-	if not hooked.bag then
-		if type(ContainerFrameItemButtonMixin) == "table" and type(ContainerFrameItemButtonMixin.OnModifiedClick) == "function" then
-			hooksecurefunc(ContainerFrameItemButtonMixin, "OnModifiedClick", OnBagClick)
-			hooked.bag = true
-		elseif type(ContainerFrameItemButton_OnModifiedClick) == "function" then
-			hooksecurefunc("ContainerFrameItemButton_OnModifiedClick", OnBagClick)
-			hooked.bag = true
-		end
-	end
-	if not hooked.bank then
-		if type(BankFrameItemButtonMixin) == "table" and type(BankFrameItemButtonMixin.OnModifiedClick) == "function" then
-			hooksecurefunc(BankFrameItemButtonMixin, "OnModifiedClick", OnBankClick)
-			hooked.bank = true
-		elseif type(BankFrameItemButton_OnModifiedClick) == "function" then
-			hooksecurefunc("BankFrameItemButton_OnModifiedClick", OnBankClick)
-			hooked.bank = true
-		end
-	end
+	HookClick("bag", _G.ContainerFrameItemButtonMixin, "OnModifiedClick", "ContainerFrameItemButton_OnModifiedClick", OnBagClick)
+	HookClick("bank", _G.BankFrameItemButtonMixin, "OnModifiedClick", "BankFrameItemButton_OnModifiedClick", OnBankClick)
+	HookClick("guildbank", _G.GuildBankItemButtonMixin, "OnModifiedClick", "GuildBankItemButton_OnModifiedClick", OnGuildBankClick)
 	if not hooked.guildbank then
-		if type(GuildBankItemButtonMixin) == "table" and type(GuildBankItemButtonMixin.OnClick) == "function" then
-			hooksecurefunc(GuildBankItemButtonMixin, "OnClick", OnGuildBankClick)
-			hooked.guildbank = true
-		elseif type(GuildBankItemButton_OnClick) == "function" then
-			hooksecurefunc("GuildBankItemButton_OnClick", OnGuildBankClick)
-			hooked.guildbank = true
-		end
+		HookClick("guildbank", _G.GuildBankItemButtonMixin, "OnClick", "GuildBankItemButton_OnClick", OnGuildBankClick)
 	end
 end
 

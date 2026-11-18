@@ -1,87 +1,171 @@
--- Say, party, raid, and your own loot links. Posts to Raid, Party, or Say.
--- Someone else's loot link whispers that player the cheapest fill.
--- Crate Query plus one crate link in party or raid whispers that person the cheapest fill, then the empty crate value.
--- Any other item link whispers AH it and the profit, Vendor it and the loss, or non-vendorable when it has no sell price.
--- Query plus an item link whispers the price. A number after the link (x10, *10, or 10) is that many.
--- Guild and incoming whispers are other modules.
+-- Party, raid, say, yell, loot, and numbered channels (Trade, General).
+-- Key-click an item link whispers the person on that line.
+-- Crates get the cheapest fill. Any other item gets AH / vendor values.
+-- Query replies (? plus one item link) are party and raid only.
 
-local POST = {
-	SAY = true,
-	PARTY = true,
-	PARTY_LEADER = true,
-	RAID = true,
-	RAID_LEADER = true,
-	RAID_WARNING = true,
-	LOOT = true,
-}
+local posted = {}
+local lastKey
+local lastAt = 0
+local hooked
 
-local installed
-local function Install()
-	if installed then
-		return
-	end
-	installed = true
-	Auctionworthy:EachChatClick(function(kind, sender, link)
-		if not POST[kind] then
-			return
-		end
-		if kind == "LOOT" and type(sender) == "string" and sender ~= "" then
-			Auctionworthy:ClickDebug("loot " .. sender)
-			Auctionworthy:WhisperCrate(link, sender)
-			return
-		end
-		Auctionworthy:ClickDebug("chat " .. kind)
-		Auctionworthy:PostCrate(link)
-	end)
+local function Secret(value)
+	return Auctionworthy:Secret(value)
 end
 
-local recentQuotes = {}
+function Auctionworthy:RememberPoster(message, sender)
+	if type(message) ~= "string" or type(sender) ~= "string" then
+		return
+	end
+	if message == "" or sender == "" or Secret(message) or Secret(sender) then
+		return
+	end
+	local found = false
+	for itemID in message:gmatch("item:(%d+)") do
+		itemID = tonumber(itemID)
+		if itemID and itemID > 0 then
+			found = true
+			posted[#posted + 1] = { itemID = itemID, sender = sender }
+		end
+	end
+	if not found then
+		return
+	end
+	while #posted > 40 do
+		table.remove(posted, 1)
+	end
+end
 
-local function RecentlyQuoted(sender, link, qty)
-	local key = strlower(sender) .. ":" .. tostring(Auctionworthy:ItemID(link) or link) .. ":" .. tostring(qty or 1)
+local function LastPoster(link)
+	local itemID = Auctionworthy:ItemID(link)
+	if not itemID then
+		return
+	end
+	for i = #posted, 1, -1 do
+		if posted[i].itemID == itemID then
+			return posted[i].sender
+		end
+	end
+end
+
+local function WhisperOwner(link, who)
+	if type(who) ~= "string" or who == "" then
+		return
+	end
 	local now = GetTime and GetTime() or 0
-	local last = recentQuotes[key]
-	if last and (now - last) < 2 then
-		return true
-	end
-	recentQuotes[key] = now
-	return false
-end
-
-local function ReplyToQuestion(message, sender)
-	if type(sender) ~= "string" or sender == "" or Auctionworthy:Secret(sender) then
+	local key = strlower(who) .. ":" .. tostring(Auctionworthy:ItemID(link) or link)
+	if lastKey == key and (now - lastAt) < 0.25 then
 		return
 	end
-	local link, qty = Auctionworthy:QuestionLink(message)
-	if not link or RecentlyQuoted(sender, link, qty) then
-		return
-	end
-	if Auctionworthy:ScanBusy() then
-		return
+	lastKey = key
+	lastAt = now
+	if Auctionworthy.ReportClick then
+		Auctionworthy:ClickDebug("chat " .. who)
 	end
 	if Auctionworthy:IsCrateLink(link) then
-		local bundles = Auctionworthy:CachedBundles(link)
-		if not bundles then
-			return
-		end
-		local crateID = Auctionworthy:ItemID(link)
-		local priceLink = (crateID and Auctionworthy:ItemLink(crateID)) or link
-		Auctionworthy:WhisperLine(Auctionworthy:CheapestLine(bundles, qty), sender)
-		Auctionworthy:WhisperLine(Auctionworthy:EmptyValueLine(priceLink, qty), sender)
+		Auctionworthy:WhisperCrate(link, who)
 		return
 	end
-	Auctionworthy:ReplyItemSell(link, sender, qty)
+	Auctionworthy:ReplyItemSell(link, who)
 end
 
-local question = CreateFrame("Frame")
-question:SetScript("OnEvent", function(_, _, message, sender)
-	ReplyToQuestion(message, sender)
-end)
-question:RegisterEvent("CHAT_MSG_PARTY")
-question:RegisterEvent("CHAT_MSG_PARTY_LEADER")
-question:RegisterEvent("CHAT_MSG_RAID")
-question:RegisterEvent("CHAT_MSG_RAID_LEADER")
+local function OnClick(chatFrame, item)
+	if not Auctionworthy:ModifierDown() then
+		return
+	end
+	if not chatFrame and not Auctionworthy:MouseOverChat() then
+		return
+	end
+	local kind, sender = Auctionworthy:ReadClick(chatFrame, item)
+	if kind == "WHISPER_OUT" then
+		return
+	end
+	sender = sender or LastPoster(item)
+	if type(sender) ~= "string" or sender == "" then
+		return
+	end
+	WhisperOwner(item, sender)
+end
 
-local frame = CreateFrame("Frame")
-frame:RegisterEvent("PLAYER_LOGIN")
-frame:SetScript("OnEvent", Install)
+local function FromHyperlink(chatFrame, link, text, button)
+	if button == "RightButton" then
+		return
+	end
+	if type(link) == "string" and not link:find("item:", 1, true) then
+		if type(text) ~= "string" or not text:find("item:", 1, true) then
+			return
+		end
+	end
+	OnClick(chatFrame, text or link)
+end
+
+local function Install()
+	if hooked then
+		return
+	end
+	hooked = true
+	if type(HandleModifiedItemClick) == "function" then
+		hooksecurefunc("HandleModifiedItemClick", function(link)
+			OnClick(nil, link)
+		end)
+	end
+	if type(ChatFrame_OnHyperlinkShow) == "function" then
+		hooksecurefunc("ChatFrame_OnHyperlinkShow", function(a, b, c, d)
+			if type(a) == "string" then
+				FromHyperlink(nil, a, b, c)
+			else
+				FromHyperlink(a, b, c, d)
+			end
+		end)
+	end
+	local mixin = _G.ChatFrameMixin
+	if type(mixin) == "table" and type(mixin.OnHyperlinkShow) == "function" then
+		hooksecurefunc(mixin, "OnHyperlinkShow", function(self, link, text, button)
+			FromHyperlink(self, link, text, button)
+		end)
+	end
+	if type(SetItemRef) == "function" then
+		hooksecurefunc("SetItemRef", function(link, text, button, chatFrame)
+			FromHyperlink(chatFrame, link, text, button)
+		end)
+	end
+end
+
+local QUERY = {
+	CHAT_MSG_PARTY = true,
+	CHAT_MSG_PARTY_LEADER = true,
+	CHAT_MSG_RAID = true,
+	CHAT_MSG_RAID_LEADER = true,
+}
+
+local events = CreateFrame("Frame")
+events:RegisterEvent("PLAYER_LOGIN")
+events:RegisterEvent("CHAT_MSG_CHANNEL")
+events:RegisterEvent("CHAT_MSG_LOOT")
+events:RegisterEvent("CHAT_MSG_SAY")
+events:RegisterEvent("CHAT_MSG_YELL")
+events:RegisterEvent("CHAT_MSG_PARTY")
+events:RegisterEvent("CHAT_MSG_PARTY_LEADER")
+events:RegisterEvent("CHAT_MSG_RAID")
+events:RegisterEvent("CHAT_MSG_RAID_LEADER")
+events:RegisterEvent("CHAT_MSG_RAID_WARNING")
+events:RegisterEvent("CHAT_MSG_INSTANCE_CHAT")
+events:RegisterEvent("CHAT_MSG_INSTANCE_CHAT_LEADER")
+events:SetScript("OnEvent", function(_, event, message, sender)
+	if event == "PLAYER_LOGIN" then
+		Install()
+		return
+	end
+	if event == "CHAT_MSG_LOOT" then
+		local who = Auctionworthy:LineLooter(message)
+		if type(who) == "string" and who ~= "" then
+			Auctionworthy:RememberPoster(message, who)
+		end
+		return
+	end
+	if QUERY[event] then
+		Auctionworthy:HandleQuestion(message, sender)
+	end
+	Auctionworthy:RememberPoster(message, sender)
+end)
+
+Install()
