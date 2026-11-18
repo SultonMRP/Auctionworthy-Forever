@@ -720,7 +720,7 @@ local function TooltipLeftTexts(tooltip)
 	for i = 1, n do
 		local line = _G[tooltipName .. "TextLeft" .. i]
 		local text = line and line.GetText and line:GetText()
-		if type(text) == "string" and text ~= "" and not Secret(text) then
+		if type(text) == "string" and not Secret(text) and text ~= "" then
 			texts[#texts + 1] = text
 		end
 	end

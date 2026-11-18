@@ -56,7 +56,7 @@ local function LeftLines(tooltip)
 	for i = 1, n do
 		local fs = _G[name .. "TextLeft" .. i]
 		local text = fs and fs.GetText and fs:GetText()
-		if type(text) == "string" and text ~= "" and not Secret(text) then
+		if type(text) == "string" and not Secret(text) and text ~= "" then
 			texts[#texts + 1] = Strip(text)
 		end
 	end
@@ -186,7 +186,7 @@ function Auctionworthy:TooltipSpellID(tooltip)
 	for i = 1, n do
 		local fs = _G[tipName .. "TextLeft" .. i]
 		local text = fs and fs.GetText and fs:GetText()
-		if type(text) == "string" and text ~= "" and not Secret(text) then
+		if type(text) == "string" and not Secret(text) and text ~= "" then
 			local sid = text:match("[Ss]pell[Ii][Dd]:?%s*(%d+)")
 			sid = tonumber(sid)
 			if sid and sid > 0 then
