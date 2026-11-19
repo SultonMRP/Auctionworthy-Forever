@@ -22,6 +22,9 @@ local defaultOptions = {
 	showDecisionText = true,
 	applyUndercut = true,
 	showUndercut = true,
+	showVendorValue = true,
+	selfCheck = false,
+	vendorDifference = false,
 	worthyScanAt = 0,
 	shareModifier = "ALT",
 }
@@ -688,6 +691,9 @@ local function ItemInfo(itemLink)
 	local ok, name, link, quality, ilvl, minLevel, itemType, subType, stackSize, equipLoc, texture, vendorPrice, classID, subclassID, bindType = pcall(C_Item.GetItemInfo, itemLink)
 	if not ok then
 		return
+	end
+	if Auctionworthy.VendorSellPrice then
+		vendorPrice = Auctionworthy:VendorSellPrice(vendorPrice, classID, subclassID, itemType, subType)
 	end
 	return name, link, quality, ilvl, minLevel, itemType, subType, stackSize, equipLoc, texture, vendorPrice, classID, subclassID, bindType
 end
@@ -2089,6 +2095,10 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 		end
 	end
 
+	if options.showVendorValue and vendorPrice > 0 then
+		tooltip:AddLine("Vendor: " .. formatGold(vendorPrice * stackCount), 1, 0.82, 0, true)
+	end
+
 	if verdict then
 		if options.showAuctionCosts then
 			tooltip:AddLine("Auction Costs: " .. formatGold(verdict.costs), 1, 0.82, 0, true)
@@ -2102,7 +2112,10 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 		end
 		if verdict.profit > 0 then
 			if options.showProfitOptions then
-				local soldNote = stackCount > 1 and (" (if sold, x" .. stackCount .. ")") or " (if sold)"
+				local soldNote = vendorPrice > 0 and " (above vendor)" or ""
+				if stackCount > 1 then
+					soldNote = vendorPrice > 0 and (" (above vendor, x" .. stackCount .. ")") or (" (x" .. stackCount .. ")")
+				end
 				tooltip:AddLine("Profit: " .. formatGold(verdict.profit) .. soldNote, 0, 1, 0, true)
 			end
 			if options.showDecisionText then
@@ -3276,7 +3289,10 @@ local function EmptyCrateValueLine(itemLink, qty)
 	if qty > 1 then
 		verdict.profit = verdict.profit * qty
 	end
-	local soldNote = qty > 1 and (" (if sold, x" .. qty .. ")") or " (if sold)"
+	local soldNote = vendorPrice > 0 and " (above vendor)" or ""
+	if qty > 1 then
+		soldNote = vendorPrice > 0 and (" (above vendor, x" .. qty .. ")") or (" (x" .. qty .. ")")
+	end
 	local lossNote = qty > 1 and (" (x" .. qty .. ")") or ""
 	if verdict.profit > 0 then
 		return "Empty AH value: Profit: " .. formatChatMoney(verdict.profit) .. soldNote
@@ -3387,32 +3403,53 @@ local function ItemSellLine(itemLink, qty)
 	if type(verdict) ~= "table" or type(verdict.chatLine) ~= "string" then
 		return "No Auction Data"
 	end
+	local line
 	if qty > 1 then
 		verdict.profit = verdict.profit * qty
-		local note = " (if sold, x" .. qty .. ")"
+		local qtyNote = " (x" .. qty .. ")"
 		if verdict.profit > 0 then
-			return "AH it: " .. formatChatMoney(verdict.profit) .. note
+			local note = vendorPrice > 0 and (" (above vendor, x" .. qty .. ")") or qtyNote
+			line = "AH it: " .. formatChatMoney(verdict.profit) .. note
+		elseif vendorPrice > 0 then
+			line = "Vendor it: " .. formatChatMoney(-verdict.profit) .. " loss if posted on AH" .. qtyNote
+		else
+			line = "non-vendorable: " .. formatChatMoney(-verdict.profit) .. " loss if posted on AH" .. qtyNote
 		end
-		if vendorPrice > 0 then
-			return "Vendor it: " .. formatChatMoney(-verdict.profit) .. " loss if posted on AH" .. note
-		end
-		return "non-vendorable: " .. formatChatMoney(-verdict.profit) .. " loss if posted on AH" .. note
+	else
+		line = verdict.chatLine
 	end
-	return verdict.chatLine
+	if verdict.profit > 0 and vendorPrice > 0 then
+		return line, nil, "AH/Vendor difference: " .. formatChatMoney(verdict.profit)
+	end
+	return line
 end
 
 local pendingItemSells = {}
 
-local function DeliverItemSell(link, who, qty)
+local function ReplyQueryLine(text, who, toPrint)
+	if type(text) ~= "string" or text == "" or Secret(text) then
+		return
+	end
+	if toPrint then
+		print("|cff00ff00Auctionworthy:|r " .. text)
+		return
+	end
+	SendShareLine(text, "WHISPER", who)
+end
+
+local function DeliverItemSell(link, who, qty, fromQuery, toPrint)
 	if Auctionworthy.ScanBusy and Auctionworthy:ScanBusy() then
 		return true
 	end
-	local line, waiting = ItemSellLine(link, qty)
+	local line, waiting, vendorDiff = ItemSellLine(link, qty)
 	if waiting then
 		return false
 	end
 	if line then
-		SendShareLine(line, "WHISPER", who)
+		ReplyQueryLine(line, who, toPrint)
+	end
+	if fromQuery and options.vendorDifference and type(vendorDiff) == "string" then
+		ReplyQueryLine(vendorDiff, who, toPrint)
 	end
 	return true
 end
@@ -3426,7 +3463,7 @@ local function FlushItemSells(itemID)
 	local held = rows.item
 	local again
 	for i = 1, #rows do
-		if rows[i] and not DeliverItemSell(rows[i].link, rows[i].who, rows[i].qty) then
+		if rows[i] and not DeliverItemSell(rows[i].link, rows[i].who, rows[i].qty, rows[i].fromQuery, rows[i].toPrint) then
 			again = again or {}
 			again[#again + 1] = rows[i]
 		end
@@ -3437,13 +3474,13 @@ local function FlushItemSells(itemID)
 	end
 end
 
-local function WatchItemSell(link, who, qty)
-	if DeliverItemSell(link, who, qty) then
+local function WatchItemSell(link, who, qty, fromQuery, toPrint)
+	if DeliverItemSell(link, who, qty, fromQuery, toPrint) then
 		return
 	end
 	local id = ItemIDFromLink(link)
 	if not id then
-		SendShareLine("No Auction Data", "WHISPER", who)
+		ReplyQueryLine("No Auction Data", who, toPrint)
 		return
 	end
 	local bucket = pendingItemSells[id]
@@ -3451,7 +3488,7 @@ local function WatchItemSell(link, who, qty)
 		bucket = {}
 		pendingItemSells[id] = bucket
 	end
-	bucket[#bucket + 1] = { link = link, who = who, qty = qty }
+	bucket[#bucket + 1] = { link = link, who = who, qty = qty, fromQuery = fromQuery, toPrint = toPrint }
 	if Item and Item.CreateFromItemLink then
 		local ok, item = pcall(Item.CreateFromItemLink, Item, link)
 		if ok and item and item.ContinueOnItemLoad then
@@ -4133,7 +4170,7 @@ local function openOptionsPanel()
 
 	local template = BackdropTemplateMixin and "BackdropTemplate" or nil
 	local frame = CreateFrame("Frame", "AuctionworthyOptionsFrame", UIParent, template)
-	frame:SetSize(400, 480)
+	frame:SetSize(400, 570)
 	frame:SetPoint("CENTER")
 	frame:SetFrameStrata("DIALOG")
 	frame:SetClampedToScreen(true)
@@ -4172,6 +4209,9 @@ local function openOptionsPanel()
 		{ label = "Show Decision Text", key = "showDecisionText" },
 		{ label = "Apply Auctionator undercut", key = "applyUndercut" },
 		{ label = "Show Undercut", key = "showUndercut" },
+		{ label = "Show vendor value", key = "showVendorValue" },
+		{ label = "Self check", key = "selfCheck" },
+		{ label = "Vendor difference", key = "vendorDifference" },
 	}
 
 	local yOffset = -72
@@ -4585,7 +4625,7 @@ function Auctionworthy:HandleQuestion(message, sender)
 	if type(sender) ~= "string" or sender == "" or Secret(sender) then
 		return
 	end
-	if IsLocalPlayer(sender) then
+	if IsLocalPlayer(sender) and not options.selfCheck then
 		return
 	end
 	local link, qty = ParseQuestionLink(message)
@@ -4599,8 +4639,9 @@ function Auctionworthy:HandleQuestion(message, sender)
 		return
 	end
 	recentQuestions[key] = now
+	local toPrint = IsLocalPlayer(sender) and options.selfCheck and true or false
 	if worthyScan.inProgress or Auctionworthy:ScanActive() then
-		SendShareLine("Sorry, currently doing a auction house scan", "WHISPER", sender)
+		ReplyQueryLine("Sorry, currently doing a auction house scan", sender, toPrint)
 		return
 	end
 	if IsCrateLink(link) then
@@ -4610,11 +4651,11 @@ function Auctionworthy:HandleQuestion(message, sender)
 		end
 		local crateID = ItemIDFromLink(link)
 		local priceLink = (crateID and ItemLinkFromID(crateID)) or link
-		SendShareLine(CheapestFillLine(bundles, qty), "WHISPER", sender)
-		SendShareLine(EmptyCrateValueLine(priceLink, qty), "WHISPER", sender)
+		ReplyQueryLine(CheapestFillLine(bundles, qty), sender, toPrint)
+		ReplyQueryLine(EmptyCrateValueLine(priceLink, qty), sender, toPrint)
 		return
 	end
-	WatchItemSell(link, sender, qty)
+	WatchItemSell(link, sender, qty, true, toPrint)
 end
 
 function Auctionworthy:ScanBusy()
@@ -4687,7 +4728,7 @@ SlashCmdList["AUCTIONWORTHY"] = function(msg)
 		print("  Your own loot link posts the same way. Someone else's loot link whispers that player.")
 		print("  A guild-chat crate whispers the person who posted it.")
 		print("  A crate whispered to you whispers that person back.")
-		print("  In guild, whisper, party, or raid, ?[crate] whispers you or that player the cheapest fill and empty-crate profit or loss.")
+		print("  In guild, whisper, party, or raid, ?[item] whispers that player the AH or vendor price. Self check prints your own query to chat. Vendor difference adds the AH vs vendor profit when AH is better.")
 		print("  Worthy Scan saves each crate's fill list, so ?[crate] can answer from that cache.")
 		return
 	end
