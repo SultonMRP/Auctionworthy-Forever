@@ -24,7 +24,6 @@ local defaultOptions = {
 	showUndercut = true,
 	showVendorValue = true,
 	selfCheck = false,
-	vendorDifference = false,
 	worthyScanAt = 0,
 	shareModifier = "ALT",
 }
@@ -157,6 +156,7 @@ local function LoadOptions()
 		options.shareModifier = "ALT"
 	end
 	options.crateQuery = StoredCrateQuery(options.crateQuery)
+	options.vendorDifference = nil
 end
 
 local function ShareModifierLabel(key)
@@ -3418,9 +3418,6 @@ local function ItemSellLine(itemLink, qty)
 	else
 		line = verdict.chatLine
 	end
-	if verdict.profit > 0 and vendorPrice > 0 then
-		return line, nil, "AH/Vendor difference: " .. formatChatMoney(verdict.profit)
-	end
 	return line
 end
 
@@ -3437,19 +3434,16 @@ local function ReplyQueryLine(text, who, toPrint)
 	SendShareLine(text, "WHISPER", who)
 end
 
-local function DeliverItemSell(link, who, qty, fromQuery, toPrint)
+local function DeliverItemSell(link, who, qty, toPrint)
 	if Auctionworthy.ScanBusy and Auctionworthy:ScanBusy() then
 		return true
 	end
-	local line, waiting, vendorDiff = ItemSellLine(link, qty)
+	local line, waiting = ItemSellLine(link, qty)
 	if waiting then
 		return false
 	end
 	if line then
 		ReplyQueryLine(line, who, toPrint)
-	end
-	if fromQuery and options.vendorDifference and type(vendorDiff) == "string" then
-		ReplyQueryLine(vendorDiff, who, toPrint)
 	end
 	return true
 end
@@ -3463,7 +3457,7 @@ local function FlushItemSells(itemID)
 	local held = rows.item
 	local again
 	for i = 1, #rows do
-		if rows[i] and not DeliverItemSell(rows[i].link, rows[i].who, rows[i].qty, rows[i].fromQuery, rows[i].toPrint) then
+		if rows[i] and not DeliverItemSell(rows[i].link, rows[i].who, rows[i].qty, rows[i].toPrint) then
 			again = again or {}
 			again[#again + 1] = rows[i]
 		end
@@ -3474,8 +3468,8 @@ local function FlushItemSells(itemID)
 	end
 end
 
-local function WatchItemSell(link, who, qty, fromQuery, toPrint)
-	if DeliverItemSell(link, who, qty, fromQuery, toPrint) then
+local function WatchItemSell(link, who, qty, toPrint)
+	if DeliverItemSell(link, who, qty, toPrint) then
 		return
 	end
 	local id = ItemIDFromLink(link)
@@ -3488,7 +3482,7 @@ local function WatchItemSell(link, who, qty, fromQuery, toPrint)
 		bucket = {}
 		pendingItemSells[id] = bucket
 	end
-	bucket[#bucket + 1] = { link = link, who = who, qty = qty, fromQuery = fromQuery, toPrint = toPrint }
+	bucket[#bucket + 1] = { link = link, who = who, qty = qty, toPrint = toPrint }
 	if Item and Item.CreateFromItemLink then
 		local ok, item = pcall(Item.CreateFromItemLink, Item, link)
 		if ok and item and item.ContinueOnItemLoad then
@@ -4211,7 +4205,6 @@ local function openOptionsPanel()
 		{ label = "Show Undercut", key = "showUndercut" },
 		{ label = "Show vendor value", key = "showVendorValue" },
 		{ label = "Self check", key = "selfCheck" },
-		{ label = "Vendor difference", key = "vendorDifference" },
 	}
 
 	local yOffset = -72
@@ -4655,7 +4648,7 @@ function Auctionworthy:HandleQuestion(message, sender)
 		ReplyQueryLine(EmptyCrateValueLine(priceLink, qty), sender, toPrint)
 		return
 	end
-	WatchItemSell(link, sender, qty, true, toPrint)
+	WatchItemSell(link, sender, qty, toPrint)
 end
 
 function Auctionworthy:ScanBusy()
@@ -4728,7 +4721,7 @@ SlashCmdList["AUCTIONWORTHY"] = function(msg)
 		print("  Your own loot link posts the same way. Someone else's loot link whispers that player.")
 		print("  A guild-chat crate whispers the person who posted it.")
 		print("  A crate whispered to you whispers that person back.")
-		print("  In guild, whisper, party, or raid, ?[item] whispers that player the AH or vendor price. Self check prints your own query to chat. Vendor difference adds the AH vs vendor profit when AH is better.")
+		print("  In guild, whisper, party, or raid, ?[item] whispers that player the AH or vendor price. Self check prints your own query to chat.")
 		print("  Worthy Scan saves each crate's fill list, so ?[crate] can answer from that cache.")
 		return
 	end
