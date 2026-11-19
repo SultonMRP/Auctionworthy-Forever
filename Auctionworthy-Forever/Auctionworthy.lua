@@ -38,6 +38,23 @@ local function Secret(value)
 	return issecretvalue ~= nil and issecretvalue(value)
 end
 
+-- InCombatLockdown is the secure check; UnitAffectingCombat covers Classic if that API is missing.
+local function InCombat()
+	if InCombatLockdown then
+		local ok, locked = pcall(InCombatLockdown)
+		if ok and not Secret(locked) and locked then
+			return true
+		end
+	end
+	if UnitAffectingCombat then
+		local ok, fighting = pcall(UnitAffectingCombat, "player")
+		if ok and not Secret(fighting) and fighting then
+			return true
+		end
+	end
+	return false
+end
+
 local tipState = setmetatable({}, { __mode = "k" })
 local function TipState(tooltip)
 	local s = tipState[tooltip]
@@ -2114,32 +2131,104 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 end
 
 local function GetLinkFromTooltip(tooltip, data)
-	if data then
-		if type(data.hyperlink) == "string" and not Secret(data.hyperlink) then
-			return data.hyperlink
+	local shown
+	if tooltip and tooltip.GetItem then
+		local ok, _, link = pcall(tooltip.GetItem, tooltip)
+		if ok and type(link) == "string" and not Secret(link) then
+			shown = link
 		end
+	end
+	local embedded
+	if data and type(data.hyperlink) == "string" and not Secret(data.hyperlink) then
+		embedded = data.hyperlink
+	end
+	-- Pattern, plans, formula, schematic, and the rest embed the finished item as
+	-- the hyperlink. primary.id is the recipe. GetItem is the recipe in bags and
+	-- the finished item on the auction house. Price the recipe.
+	local embeddedID = ItemIDFromLink(embedded)
+	local recipeID = data and not Secret(data.id) and tonumber(data.id) or nil
+	if recipeID and recipeID > 0 and embeddedID and recipeID ~= embeddedID then
+		return ItemLinkFromID(recipeID)
+	end
+	local shownID = ItemIDFromLink(shown)
+	if shownID and embeddedID and shownID ~= embeddedID then
+		return shown
+	end
+	if embedded then
+		return embedded
+	end
+	if data then
 		if data.guid and not Secret(data.guid) and C_Item and C_Item.GetItemLinkByGUID then
 			local ok, link = pcall(C_Item.GetItemLinkByGUID, data.guid)
 			if ok and type(link) == "string" then
 				return link
 			end
 		end
-		if not Secret(data.id) then
-			local id = tonumber(data.id)
-			if id and id > 0 then
-				local link = ItemLinkFromID(id)
-				if type(link) == "string" then
-					return link
-				end
+		if recipeID and recipeID > 0 then
+			local link = ItemLinkFromID(recipeID)
+			if type(link) == "string" then
+				return link
 			end
 		end
 	end
-	if tooltip.GetItem then
-		local ok, _, link = pcall(tooltip.GetItem, tooltip)
-		if ok and type(link) == "string" then
-			return link
+	return shown
+end
+
+-- A recipe link can carry the finished item's id with the recipe's name.
+function Auctionworthy:ResolveItemLink(link)
+	if type(link) ~= "string" or link == "" or Secret(link) then
+		return link
+	end
+	local shown = link:match("|h%[(.-)%]|h")
+	local recipeName = false
+	if type(shown) == "string" then
+		local prefixes = {
+			"Pattern: ", "Plans: ", "Schematic: ", "Recipe: ",
+			"Formula: ", "Manual: ", "Design: ", "Technique: ",
+		}
+		for i = 1, #prefixes do
+			local prefix = prefixes[i]
+			if shown:sub(1, #prefix) == prefix then
+				recipeName = true
+				break
+			end
 		end
 	end
+	if recipeName then
+		local name = ItemInfo(link)
+		if Secret(name) then
+			name = nil
+		end
+		if type(name) ~= "string" or name ~= shown then
+			local id = ItemIDFromName(shown)
+			if id and id ~= ItemIDFromLink(link) then
+				return ItemLinkFromID(id)
+			end
+		end
+	end
+	return link
+end
+
+function Auctionworthy:PreferListedLink(link, tooltip)
+	link = Auctionworthy:ResolveItemLink(link)
+	if not tooltip or not tooltip.GetPrimaryTooltipData or (tooltip.IsShown and not tooltip:IsShown()) then
+		return link
+	end
+	local ok, data = pcall(tooltip.GetPrimaryTooltipData, tooltip)
+	if not ok or type(data) ~= "table" or Secret(data) then
+		return link
+	end
+	local listed = data.id
+	if Secret(listed) then
+		return link
+	end
+	listed = tonumber(listed)
+	local hyperID = type(data.hyperlink) == "string" and not Secret(data.hyperlink) and ItemIDFromLink(data.hyperlink)
+	local linkID = ItemIDFromLink(link)
+	if listed and listed > 0 and hyperID and linkID and linkID == hyperID and listed ~= linkID then
+		return ItemLinkFromID(listed)
+	end
+	return link
 end
 
 local function updateTooltip(tooltip, itemLink)
@@ -2510,46 +2599,36 @@ local function PratOwner(link, line)
 	end
 end
 
--- Forever's UnitName is the first name. Chat shows UnitFullName as "First Surname".
+-- UnitName is the portrait's first name. GetUnitName("player") is the chat
+-- name, "First Last".
 local function PlayerChatName()
+	if GetUnitName then
+		local name = GetUnitName("player")
+		if type(name) == "string" and name ~= "" and not Secret(name) then
+			return name
+		end
+	end
 	local short = UnitName and UnitName("player")
-	if type(short) == "string" and Secret(short) then
-		short = nil
-	end
-	if not UnitFullName then
+	if type(short) == "string" and short ~= "" and not Secret(short) then
 		return short
 	end
-	local first, second = UnitFullName("player")
-	if type(first) ~= "string" or first == "" or Secret(first) then
-		return short
+end
+
+local function BareName(name)
+	if type(name) ~= "string" or Secret(name) then
+		return
 	end
-	if type(second) ~= "string" or second == "" or Secret(second) then
-		return short or first
+	name = strtrim(name:gsub("%-.+$", ""))
+	if name == "" then
+		return
 	end
-	if WOW_PROJECT_CAMELOT and WOW_PROJECT_ID == WOW_PROJECT_CAMELOT then
-		return first .. " " .. second
-	end
-	local realm = GetNormalizedRealmName and GetNormalizedRealmName() or GetRealmName and GetRealmName()
-	if type(realm) == "string" and strlower((second:gsub("%s+", ""))) == strlower((realm:gsub("%s+", ""))) then
-		return short or first
-	end
-	return first .. " " .. second
+	return strlower(name)
 end
 
 IsLocalPlayer = function(target)
-	if type(target) ~= "string" or target == "" or Secret(target) then
-		return false
-	end
-	local function same(name)
-		return type(name) == "string" and not Secret(name) and strlower(name) == strlower(target)
-	end
-	if same(PlayerChatName()) then
-		return true
-	end
-	if UnitName and same(UnitName("player")) then
-		return true
-	end
-	return false
+	local mine = BareName(PlayerChatName())
+	local theirs = BareName(target)
+	return mine ~= nil and mine == theirs
 end
 
 local function WhisperLineMark()
@@ -2948,6 +3027,9 @@ local function ScanTooltip()
 	if scanTooltip then
 		return scanTooltip
 	end
+	if InCombat() then
+		return nil
+	end
 	local ok, tip = pcall(CreateFrame, "GameTooltip", "AuctionworthyScanTooltip", UIParent, "GameTooltipTemplate")
 	if not ok or not tip then
 		return nil
@@ -3124,11 +3206,11 @@ local function ParseQuestionLink(message)
 		or rest:match("(|c%x%x%x%x%x%x%x%x|Hitem:[^|]-|h%[.-%]|h|r)")
 		or rest:match("(|Hitem:[^|]-|h%[.-%]|h)")
 	if type(link) == "string" and link ~= "" and not Secret(link) then
-		return link, qty
+		return Auctionworthy:ResolveItemLink(link), qty
 	end
 	local itemID = tonumber(rest:match("item:(%d+)"))
 	if itemID and itemID > 0 then
-		return "item:" .. itemID, qty
+		return Auctionworthy:ResolveItemLink("item:" .. itemID), qty
 	end
 end
 
@@ -3648,390 +3730,404 @@ SetWorthyScanButtonEnabled = function(enabled, label)
 	end
 end
 
-local function AuctionatorScanButton()
-	local parent = SafeGlobal("AuctionatorConfigFrame")
-	return parent and parent.ScanButton
-end
-
-local function SetAuctionatorScanButtonEnabled(enabled)
-	local btn = AuctionatorScanButton()
-	if btn and btn.SetEnabled then
-		pcall(btn.SetEnabled, btn, enabled and true or false)
+local function InstallScanControls()
+	local function AuctionatorScanButton()
+		local parent = SafeGlobal("AuctionatorConfigFrame")
+		return parent and parent.ScanButton
 	end
-end
 
-local function AuctionatorScanActive()
-	if auctionatorBusy then
-		return true
+	local function SetAuctionatorScanButtonEnabled(enabled)
+		local btn = AuctionatorScanButton()
+		if btn and btn.SetEnabled then
+			pcall(btn.SetEnabled, btn, enabled and true or false)
+		end
 	end
-	local addon = AuctionatorAddon()
-	local state = addon and addon.State
-	if type(state) ~= "table" then
+
+	local function AuctionatorScanActive()
+		if auctionatorBusy then
+			return true
+		end
+		local addon = AuctionatorAddon()
+		local state = addon and addon.State
+		if type(state) ~= "table" then
+			return false
+		end
+		local full = state.FullScanFrameRef
+		if type(full) == "table" and full.inProgress then
+			return true
+		end
+		local inc = state.IncrementalScanFrameRef
+		if type(inc) == "table" and inc.doingFullScan then
+			return true
+		end
 		return false
 	end
-	local full = state.FullScanFrameRef
-	if type(full) == "table" and full.inProgress then
-		return true
-	end
-	local inc = state.IncrementalScanFrameRef
-	if type(inc) == "table" and inc.doingFullScan then
-		return true
-	end
-	return false
-end
 
-local WORTHY_SCAN_CD = 5 * 60
+	local WORTHY_SCAN_CD = 5 * 60
 
-local function WorthyScanRemaining()
-	local last = tonumber(options.worthyScanAt) or 0
-	local left = (last + WORTHY_SCAN_CD) - time()
-	if left < 0 then
-		return 0
+	local function WorthyScanRemaining()
+		local last = tonumber(options.worthyScanAt) or 0
+		local left = (last + WORTHY_SCAN_CD) - time()
+		if left < 0 then
+			return 0
+		end
+		return math.floor(left)
 	end
-	return math.floor(left)
-end
 
-local function FormatWorthyCD(sec)
-	sec = tonumber(sec) or 0
-	return string.format("CD %d:%02d", math.floor(sec / 60), sec % 60)
-end
-
-local worthyCdTicker
-local function StopWorthyCdTicker()
-	if worthyCdTicker then
-		worthyCdTicker:Cancel()
-		worthyCdTicker = nil
+	local function FormatWorthyCD(sec)
+		sec = tonumber(sec) or 0
+		return string.format("CD %d:%02d", math.floor(sec / 60), sec % 60)
 	end
-end
 
-local function StartWorthyCdTicker()
-	if worthyCdTicker or not C_Timer or not C_Timer.NewTicker then
-		return
+	local worthyCdTicker
+	local function StopWorthyCdTicker()
+		if worthyCdTicker then
+			worthyCdTicker:Cancel()
+			worthyCdTicker = nil
+		end
 	end
-	worthyCdTicker = C_Timer.NewTicker(1, function()
-		if worthyScan.inProgress then
+
+	local function StartWorthyCdTicker()
+		if worthyCdTicker or not C_Timer or not C_Timer.NewTicker then
 			return
 		end
-		local left = WorthyScanRemaining()
-		if left <= 0 then
-			StopWorthyCdTicker()
-			if SyncScanButtons then
-				SyncScanButtons()
+		worthyCdTicker = C_Timer.NewTicker(1, function()
+			if worthyScan.inProgress then
+				return
 			end
-			return
-		end
-		SetWorthyScanButtonEnabled(false, FormatWorthyCD(left))
-	end)
-end
-
-local function BeginWorthyCooldown()
-	options.worthyScanAt = time()
-	SaveOptions()
-	StartWorthyCdTicker()
-end
-
-SyncScanButtons = function()
-	local us = worthyScan.inProgress
-	if us then
-		SetAuctionatorScanButtonEnabled(false)
-		if worthyScan.button then
-			worthyScan.button:SetEnabled(false)
-		end
-		return
+			local left = WorthyScanRemaining()
+			if left <= 0 then
+				StopWorthyCdTicker()
+				if SyncScanButtons then
+					SyncScanButtons()
+				end
+				return
+			end
+			SetWorthyScanButtonEnabled(false, FormatWorthyCD(left))
+		end)
 	end
-	SetAuctionatorScanButtonEnabled(true)
-	local left = WorthyScanRemaining()
-	if left > 0 then
-		SetWorthyScanButtonEnabled(false, FormatWorthyCD(left))
+
+	local function BeginWorthyCooldown()
+		options.worthyScanAt = time()
+		SaveOptions()
 		StartWorthyCdTicker()
-	elseif AuctionatorScanActive() then
-		SetWorthyScanButtonEnabled(false, "Worthy Scan")
-	else
-		SetWorthyScanButtonEnabled(true, "Worthy Scan")
 	end
-end
 
-RestoreDefaultScanButtons = function()
-	SyncScanButtons()
-end
-
--- Worthy Scan fills Browse with the whole AH. Reset it so switching tabs
--- still shows a usable list without closing the window.
-local function ResetAuctionBrowse()
-	local house = SafeGlobal("AuctionHouseFrame")
-	if type(house) ~= "table" or not house.IsShown or not house:IsShown() then
-		return
-	end
-	local browse = house.BrowseResultsFrame
-	pcall(function()
-		if type(browse) == "table" then
-			if browse.Reset then
-				browse:Reset()
+	SyncScanButtons = function()
+		local us = worthyScan.inProgress
+		if us then
+			SetAuctionatorScanButtonEnabled(false)
+			if worthyScan.button then
+				worthyScan.button:SetEnabled(false)
 			end
-			local list = browse.ItemList
-			if type(list) == "table" then
-				if list.SetCustomError then
-					list:SetCustomError(nil)
-				end
-				if list.DirtyList then
-					list:DirtyList()
-				end
-				if list.Reset then
-					list:Reset()
-				end
-				if list.RefreshScrollFrame then
-					list:RefreshScrollFrame()
-				end
-			end
+			return
 		end
-	end)
-	local query = {
-		searchString = "zzqxxworthy",
-		sorts = {},
-		filters = {},
-		itemClassFilters = {},
-	}
-	local addon = AuctionatorAddon()
-	if addon and addon.AH and addon.AH.IsNotThrottled and not addon.AH.IsNotThrottled() then
-		if C_Timer and C_Timer.After and not ResetAuctionBrowse.waiting then
-			ResetAuctionBrowse.waiting = true
-			C_Timer.After(1, function()
-				ResetAuctionBrowse.waiting = nil
-				ResetAuctionBrowse()
-			end)
+		SetAuctionatorScanButtonEnabled(true)
+		local left = WorthyScanRemaining()
+		if left > 0 then
+			SetWorthyScanButtonEnabled(false, FormatWorthyCD(left))
+			StartWorthyCdTicker()
+		elseif AuctionatorScanActive() then
+			SetWorthyScanButtonEnabled(false, "Worthy Scan")
+		else
+			SetWorthyScanButtonEnabled(true, "Worthy Scan")
 		end
-		return
 	end
-	if addon and addon.AH and addon.AH.SendBrowseQuery then
-		pcall(addon.AH.SendBrowseQuery, query)
-		return
-	end
-	if C_AuctionHouse and C_AuctionHouse.SendBrowseQuery then
-		pcall(C_AuctionHouse.SendBrowseQuery, query)
-	end
-end
 
-ResetAuctionBrowseSoon = function()
-	if C_Timer and C_Timer.After then
-		C_Timer.After(0.3, ResetAuctionBrowse)
-		return
-	end
-	ResetAuctionBrowse()
-end
-
-FinishWorthyScan = function()
-	worthyScan.inProgress = false
-	worthyScan.processing = false
-	worthyScan.mode = nil
-	auctionatorBusy = false
-	AuctionworthyFillIDs = fillIDs
-	BeginWorthyCooldown()
-	RestoreDefaultScanButtons()
-	WorthyPrint("Scan finished. Cached " .. tostring(worthyScan.stored) .. " Waylaid crates.")
-	if ReadScannedCrateFills then
-		ReadScannedCrateFills()
-	end
-	ResetAuctionBrowseSoon()
-end
-
-local function AuctionatorScanFrame()
-	local addon = AuctionatorAddon()
-	local state = addon and addon.State
-	if type(state) ~= "table" then
-		return
-	end
-	local useReplicate = false
-	local cfg = addon.Config
-	if cfg and cfg.Get and cfg.Options and cfg.Options.REPLICATE_SCAN then
-		local ok, value = pcall(cfg.Get, cfg.Options.REPLICATE_SCAN)
-		useReplicate = ok and value and true
-	end
-	if useReplicate and state.FullScanFrameRef then
-		return state.FullScanFrameRef, "replicate"
-	end
-	if state.IncrementalScanFrameRef then
-		return state.IncrementalScanFrameRef, "summary"
-	end
-	return state.FullScanFrameRef, "full"
-end
-
-local function StartWorthyScan()
-	if worthyScan.inProgress then
-		WorthyPrint("Worthy Scan already running.")
-		return
-	end
-	if AuctionatorScanActive() then
-		WorthyPrint("Auctionator is already scanning. Wait for it to finish.")
+	RestoreDefaultScanButtons = function()
 		SyncScanButtons()
-		return
 	end
-	local left = WorthyScanRemaining()
-	if left > 0 then
-		WorthyPrint("Worthy Scan is on cooldown (" .. FormatWorthyCD(left) .. ").")
-		SyncScanButtons()
-		return
-	end
-	local frame, kind = AuctionatorScanFrame()
-	if type(frame) ~= "table" or type(frame.InitiateScan) ~= "function" then
-		WorthyPrint("Auctionator Full Scan is not ready.")
-		return
-	end
-	if frame.CanInitiate and not frame:CanInitiate() then
-		local msg
-		if frame.NextScanMessage then
-			local ok, text = pcall(frame.NextScanMessage, frame)
-			if ok then
-				msg = text
-			end
-		end
-		WorthyPrint(msg or "Auctionator Full Scan is on cooldown.")
-		return
-	end
-	pendingCrateIDs = {}
-	scanItemIDs = {}
-	local removed = PruneFillIDs()
-	if removed > 0 then
-		WorthyPrint("Purged " .. removed .. " non-Waylaid names before the scan.")
-	end
-	worthyScan.stored = 0
-	worthyScan.total = 0
-	worthyScan.index = 0
-	worthyScan.processing = false
-	worthyScan.inProgress = true
-	worthyScan.mode = kind
-	SetWorthyScanButtonEnabled(false, "Scanning...")
-	SyncScanButtons()
-	WorthyPrint("Starting scan.")
-	local ok, err = pcall(frame.InitiateScan, frame)
-	if not ok then
-		worthyScan.inProgress = false
-		worthyScan.processing = false
-		worthyScan.mode = nil
-		RestoreDefaultScanButtons()
-		WorthyPrint("Scan failed to start: " .. tostring(err))
-	end
-end
 
-function Auctionworthy:AUCTION_HOUSE_CLOSED()
-	if worthyScan.inProgress then
-		WorthyPrint("Worthy Scan cancelled (AH closed).")
+	-- Worthy Scan fills Browse with the whole AH. Reset it so switching tabs
+	-- still shows a usable list without closing the window.
+	local function ResetAuctionBrowse()
+		local house = SafeGlobal("AuctionHouseFrame")
+		if type(house) ~= "table" or not house.IsShown or not house:IsShown() then
+			return
+		end
+		local browse = house.BrowseResultsFrame
+		pcall(function()
+			if type(browse) == "table" then
+				if browse.Reset then
+					browse:Reset()
+				end
+				local list = browse.ItemList
+				if type(list) == "table" then
+					if list.SetCustomError then
+						list:SetCustomError(nil)
+					end
+					if list.DirtyList then
+						list:DirtyList()
+					end
+					if list.Reset then
+						list:Reset()
+					end
+					if list.RefreshScrollFrame then
+						list:RefreshScrollFrame()
+					end
+				end
+			end
+		end)
+		local query = {
+			searchString = "zzqxxworthy",
+			sorts = {},
+			filters = {},
+			itemClassFilters = {},
+		}
+		local addon = AuctionatorAddon()
+		if addon and addon.AH and addon.AH.IsNotThrottled and not addon.AH.IsNotThrottled() then
+			if C_Timer and C_Timer.After and not ResetAuctionBrowse.waiting then
+				ResetAuctionBrowse.waiting = true
+				C_Timer.After(1, function()
+					ResetAuctionBrowse.waiting = nil
+					ResetAuctionBrowse()
+				end)
+			end
+			return
+		end
+		if addon and addon.AH and addon.AH.SendBrowseQuery then
+			pcall(addon.AH.SendBrowseQuery, query)
+			return
+		end
+		if C_AuctionHouse and C_AuctionHouse.SendBrowseQuery then
+			pcall(C_AuctionHouse.SendBrowseQuery, query)
+		end
+	end
+
+	ResetAuctionBrowseSoon = function()
+		if C_Timer and C_Timer.After then
+			C_Timer.After(0.3, ResetAuctionBrowse)
+			return
+		end
+		ResetAuctionBrowse()
+	end
+
+	FinishWorthyScan = function()
 		worthyScan.inProgress = false
 		worthyScan.processing = false
 		worthyScan.mode = nil
 		auctionatorBusy = false
+		AuctionworthyFillIDs = fillIDs
+		BeginWorthyCooldown()
+		RestoreDefaultScanButtons()
+		WorthyPrint("Scan finished. Cached " .. tostring(worthyScan.stored) .. " Waylaid crates.")
+		if ReadScannedCrateFills then
+			ReadScannedCrateFills()
+		end
+		ResetAuctionBrowseSoon()
 	end
-	RestoreDefaultScanButtons()
-end
 
-local function EnsureWorthyScanButton()
-	if worthyScan.button and worthyScan.button.GetParent and worthyScan.button:GetParent() then
-		return
+	local function AuctionatorScanFrame()
+		local addon = AuctionatorAddon()
+		local state = addon and addon.State
+		if type(state) ~= "table" then
+			return
+		end
+		local useReplicate = false
+		local cfg = addon.Config
+		if cfg and cfg.Get and cfg.Options and cfg.Options.REPLICATE_SCAN then
+			local ok, value = pcall(cfg.Get, cfg.Options.REPLICATE_SCAN)
+			useReplicate = ok and value and true
+		end
+		if useReplicate and state.FullScanFrameRef then
+			return state.FullScanFrameRef, "replicate"
+		end
+		if state.IncrementalScanFrameRef then
+			return state.IncrementalScanFrameRef, "summary"
+		end
+		return state.FullScanFrameRef, "full"
 	end
-	local parent = SafeGlobal("AuctionatorConfigFrame")
-	if type(parent) ~= "table" or not parent.SetScript then
-		return
-	end
-	if not parent.ScanButton and not parent.OptionsButton then
-		return
-	end
-	local btn = CreateFrame("Button", "AuctionworthyWorthyScanButton", parent, "UIPanelDynamicResizeButtonTemplate")
-	if not btn then
-		return
-	end
-	btn:SetText("Worthy Scan")
-	if btn.FitToText then
-		pcall(btn.FitToText, btn)
-	else
-		btn:SetSize(110, 22)
-	end
-	local anchor = parent.OptionsButton or parent.ScanButton
-	btn:SetPoint("TOPRIGHT", anchor, "TOPLEFT", -3, 0)
-	btn:SetScript("OnClick", function()
-		local ok, err = pcall(StartWorthyScan)
+
+	local function StartWorthyScan()
+		if worthyScan.inProgress then
+			WorthyPrint("Worthy Scan already running.")
+			return
+		end
+		if AuctionatorScanActive() then
+			WorthyPrint("Auctionator is already scanning. Wait for it to finish.")
+			SyncScanButtons()
+			return
+		end
+		local left = WorthyScanRemaining()
+		if left > 0 then
+			WorthyPrint("Worthy Scan is on cooldown (" .. FormatWorthyCD(left) .. ").")
+			SyncScanButtons()
+			return
+		end
+		local frame, kind = AuctionatorScanFrame()
+		if type(frame) ~= "table" or type(frame.InitiateScan) ~= "function" then
+			WorthyPrint("Auctionator Full Scan is not ready.")
+			return
+		end
+		if frame.CanInitiate and not frame:CanInitiate() then
+			local msg
+			if frame.NextScanMessage then
+				local ok, text = pcall(frame.NextScanMessage, frame)
+				if ok then
+					msg = text
+				end
+			end
+			WorthyPrint(msg or "Auctionator Full Scan is on cooldown.")
+			return
+		end
+		pendingCrateIDs = {}
+		scanItemIDs = {}
+		local removed = PruneFillIDs()
+		if removed > 0 then
+			WorthyPrint("Purged " .. removed .. " non-Waylaid names before the scan.")
+		end
+		worthyScan.stored = 0
+		worthyScan.total = 0
+		worthyScan.index = 0
+		worthyScan.processing = false
+		worthyScan.inProgress = true
+		worthyScan.mode = kind
+		SetWorthyScanButtonEnabled(false, "Scanning...")
+		SyncScanButtons()
+		WorthyPrint("Starting scan.")
+		local ok, err = pcall(frame.InitiateScan, frame)
 		if not ok then
+			worthyScan.inProgress = false
+			worthyScan.processing = false
+			worthyScan.mode = nil
+			RestoreDefaultScanButtons()
 			WorthyPrint("Scan failed to start: " .. tostring(err))
 		end
-	end)
-	worthyScan.button = btn
-	SyncScanButtons()
-end
-
-local configFrameHooked
-local function HookWorthyScanButton()
-	EnsureWorthyScanButton()
-	if configFrameHooked then
-		return
 	end
-	local parent = SafeGlobal("AuctionatorConfigFrame")
-	if type(parent) == "table" and parent.HookScript then
-		local ok = pcall(parent.HookScript, parent, "OnShow", EnsureWorthyScanButton)
-		if ok then
-			configFrameHooked = true
+
+	function Auctionworthy:AUCTION_HOUSE_CLOSED()
+		if worthyScan.inProgress then
+			WorthyPrint("Worthy Scan cancelled (AH closed).")
+			worthyScan.inProgress = false
+			worthyScan.processing = false
+			worthyScan.mode = nil
+			auctionatorBusy = false
+		end
+		RestoreDefaultScanButtons()
+	end
+
+	local function EnsureWorthyScanButton()
+		if worthyScan.button and worthyScan.button.GetParent and worthyScan.button:GetParent() then
+			return
+		end
+		if InCombat() then
+			return
+		end
+		local parent = SafeGlobal("AuctionatorConfigFrame")
+		if type(parent) ~= "table" or not parent.SetScript then
+			return
+		end
+		if not parent.ScanButton and not parent.OptionsButton then
+			return
+		end
+		local btn = CreateFrame("Button", "AuctionworthyWorthyScanButton", parent, "UIPanelDynamicResizeButtonTemplate")
+		if not btn then
+			return
+		end
+		btn:SetText("Worthy Scan")
+		if btn.FitToText then
+			pcall(btn.FitToText, btn)
+		else
+			btn:SetSize(110, 22)
+		end
+		local anchor = parent.OptionsButton or parent.ScanButton
+		btn:SetPoint("TOPRIGHT", anchor, "TOPLEFT", -3, 0)
+		btn:SetScript("OnClick", function()
+			local ok, err = pcall(StartWorthyScan)
+			if not ok then
+				WorthyPrint("Scan failed to start: " .. tostring(err))
+			end
+		end)
+		worthyScan.button = btn
+		SyncScanButtons()
+	end
+
+	local configFrameHooked
+	local function HookWorthyScanButton()
+		EnsureWorthyScanButton()
+		if configFrameHooked then
+			return
+		end
+		local parent = SafeGlobal("AuctionatorConfigFrame")
+		if type(parent) == "table" and parent.HookScript then
+			local ok = pcall(parent.HookScript, parent, "OnShow", EnsureWorthyScanButton)
+			if ok then
+				configFrameHooked = true
+			end
 		end
 	end
-end
 
-function Auctionworthy:AUCTION_HOUSE_SHOW()
-	HookWorthyScanButton()
-	if C_Timer and C_Timer.After then
-		C_Timer.After(0.25, function()
-			HookWorthyScanButton()
-			SyncScanButtons()
-		end)
-		C_Timer.After(1, function()
-			HookWorthyScanButton()
-			SyncScanButtons()
-		end)
+	function Auctionworthy:AUCTION_HOUSE_SHOW()
+		HookWorthyScanButton()
+		if C_Timer and C_Timer.After then
+			C_Timer.After(0.25, function()
+				HookWorthyScanButton()
+				SyncScanButtons()
+			end)
+			C_Timer.After(1, function()
+				HookWorthyScanButton()
+				SyncScanButtons()
+			end)
+		end
 	end
-end
-Auctionworthy:RegisterEvent("AUCTION_HOUSE_SHOW")
-Auctionworthy:RegisterEvent("AUCTION_HOUSE_CLOSED")
+	Auctionworthy:RegisterEvent("AUCTION_HOUSE_SHOW")
+	Auctionworthy:RegisterEvent("AUCTION_HOUSE_CLOSED")
 
-function Auctionworthy:ADDON_LOADED(name)
-	if name == ADDON_NAME or name == "Prat-3.0" then
+	function Auctionworthy:ADDON_LOADED(name)
+		if name == ADDON_NAME or name == "Prat-3.0" then
+			HookPratMessages()
+		end
+		if name == ADDON_NAME then
+			LoadOptions()
+			LoadFillIDs()
+			LoadAtlasNames()
+			LoadCrateFills()
+			local dropped = DropDatabaseAdditions()
+			if dropped > 0 then
+				WorthyPrint("Removed " .. dropped .. " saved names already in the database.")
+			end
+			PruneFillIDs()
+			InstallHooks()
+			HookAuctionatorOptionsClose()
+			HookAuctionatorScan()
+			HookWorthyScanButton()
+			RefreshAuctionatorConfig(false)
+			return
+		end
+		if name == "Auctionator" then
+			HookAuctionatorOptionsClose()
+			HookAuctionatorScan()
+			HookWorthyScanButton()
+			RefreshAuctionatorConfig(false)
+		end
+	end
+
+	function Auctionworthy:PLAYER_ENTERING_WORLD()
+		self:UnregisterEvent("PLAYER_ENTERING_WORLD")
 		HookPratMessages()
-	end
-	if name == ADDON_NAME then
-		LoadOptions()
-		LoadFillIDs()
-		LoadAtlasNames()
-		LoadCrateFills()
-		local dropped = DropDatabaseAdditions()
-		if dropped > 0 then
-			WorthyPrint("Removed " .. dropped .. " saved names already in the database.")
+		HookAuctionatorOptionsClose()
+		HookAuctionatorScan()
+		HookWorthyScanButton()
+		RefreshAuctionatorConfig(false)
+		if not AuctionatorReady() then
+			print("|cffff7f00Auctionworthy-Forever:|r Auctionator is off. Prices stay empty until you enable it. /worthy refresh after it loads.")
 		end
-		PruneFillIDs()
-		InstallHooks()
-		HookAuctionatorOptionsClose()
-		HookAuctionatorScan()
-		HookWorthyScanButton()
-		RefreshAuctionatorConfig(false)
-		return
 	end
-	if name == "Auctionator" then
-		HookAuctionatorOptionsClose()
-		HookAuctionatorScan()
-		HookWorthyScanButton()
-		RefreshAuctionatorConfig(false)
-	end
-end
+	Auctionworthy:RegisterEvent("PLAYER_ENTERING_WORLD")
 
-function Auctionworthy:PLAYER_ENTERING_WORLD()
-	self:UnregisterEvent("PLAYER_ENTERING_WORLD")
-	HookPratMessages()
-	HookAuctionatorOptionsClose()
-	HookAuctionatorScan()
-	HookWorthyScanButton()
-	RefreshAuctionatorConfig(false)
-	if not AuctionatorReady() then
-		print("|cffff7f00Auctionworthy-Forever:|r Auctionator is off. Prices stay empty until you enable it. /worthy refresh after it loads.")
+	function Auctionworthy:ScanActive()
+		return AuctionatorScanActive()
 	end
 end
-Auctionworthy:RegisterEvent("PLAYER_ENTERING_WORLD")
+InstallScanControls()
 
 local function openOptionsPanel()
 	if AuctionworthyOptionsFrame then
 		AuctionworthyOptionsFrame:Show()
+		return
+	end
+	if InCombat() then
+		print("|cffff7f00Auctionworthy-Forever:|r Options wait until you leave combat.")
 		return
 	end
 
@@ -4287,13 +4383,6 @@ function Auctionworthy:MaterialBuyCost(name, qty)
 	end
 end
 
-local VIAL_ITEM_IDS = {
-	[3371] = true,
-	[3372] = true,
-	[8925] = true,
-	[18256] = true,
-}
-
 function Auctionworthy:VendorRowByItemID(itemID)
 	itemID = tonumber(itemID)
 	if not itemID or itemID < 1 then
@@ -4328,7 +4417,7 @@ function Auctionworthy:VendorPackSizeByItemID(itemID)
 	if pack and pack > 1 then
 		return pack
 	end
-	if itemID and VIAL_ITEM_IDS[itemID] then
+	if itemID == 3371 or itemID == 3372 or itemID == 8925 or itemID == 18256 then
 		return 5
 	end
 	return 1
@@ -4377,18 +4466,6 @@ end
 
 -- Same unit math as Auctionator To Craft: vendor, else AH; AH if vendor is > 5x AH.
 -- qty * unit. No vial packs.
-local function getAuctionatorVendorByItemID(itemID)
-	itemID = tonumber(itemID)
-	local addon = AuctionatorAddon()
-	if not itemID or itemID < 1 or not addon or not addon.API or not addon.API.v1 or not addon.API.v1.GetVendorPriceByItemID then
-		return
-	end
-	local ok, price = pcall(addon.API.v1.GetVendorPriceByItemID, CALLER_ID, itemID)
-	if ok and ValidAuctionPrice(price) then
-		return price
-	end
-end
-
 function Auctionworthy:CraftReagentCost(itemID, qty)
 	itemID = tonumber(itemID)
 	qty = tonumber(qty) or 1
@@ -4398,7 +4475,14 @@ function Auctionworthy:CraftReagentCost(itemID, qty)
 	if qty < 1 then
 		qty = 1
 	end
-	local vendor = getAuctionatorVendorByItemID(itemID)
+	local vendor
+	local addon = AuctionatorAddon()
+	if addon and addon.API and addon.API.v1 and addon.API.v1.GetVendorPriceByItemID then
+		local ok, price = pcall(addon.API.v1.GetVendorPriceByItemID, CALLER_ID, itemID)
+		if ok and ValidAuctionPrice(price) then
+			vendor = price
+		end
+	end
 	local auction = getAuctionPriceByItemID(itemID)
 	local unit = vendor or auction
 	if vendor and auction and vendor > 5 * auction then
@@ -4441,6 +4525,14 @@ end
 
 function Auctionworthy:LineLooter(line)
 	return ParseLooter and ParseLooter(line)
+end
+
+function Auctionworthy:InCombat()
+	return InCombat()
+end
+
+function Auctionworthy:IsLocalPlayer(name)
+	return IsLocalPlayer(name) and true or false
 end
 
 function Auctionworthy:Secret(value)
@@ -4493,6 +4585,9 @@ function Auctionworthy:HandleQuestion(message, sender)
 	if type(sender) ~= "string" or sender == "" or Secret(sender) then
 		return
 	end
+	if IsLocalPlayer(sender) then
+		return
+	end
 	local link, qty = ParseQuestionLink(message)
 	if not link then
 		return
@@ -4504,7 +4599,7 @@ function Auctionworthy:HandleQuestion(message, sender)
 		return
 	end
 	recentQuestions[key] = now
-	if worthyScan.inProgress or AuctionatorScanActive() then
+	if worthyScan.inProgress or Auctionworthy:ScanActive() then
 		SendShareLine("Sorry, currently doing a auction house scan", "WHISPER", sender)
 		return
 	end
@@ -4526,7 +4621,7 @@ function Auctionworthy:ScanBusy()
 	if worthyScan.inProgress then
 		return true
 	end
-	return AuctionatorScanActive() and true or false
+	return Auctionworthy:ScanActive() and true or false
 end
 
 function Auctionworthy:ItemName(link)
@@ -4565,6 +4660,7 @@ end
 function Auctionworthy:ReleaseShare()
 	ReleaseShareLater()
 end
+
 
 SLASH_AUCTIONWORTHY1 = "/auctionworthy"
 SLASH_AUCTIONWORTHY2 = "/worthy"

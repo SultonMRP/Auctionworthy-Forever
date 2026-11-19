@@ -34,25 +34,30 @@ local function ShowMark(button, letter, color)
 	mark:Show()
 end
 
+local function Addon()
+	return _G.Auctionworthy
+end
+
 local function Paint(button, info)
 	seen[button] = true
-	if type(info) ~= "table" then
+	local addon = Addon()
+	if type(info) ~= "table" or not addon then
 		button.AuctionworthyDirty = nil
 		HideMark(button)
 		return
 	end
 	local link = info.itemLink
-	if type(link) ~= "string" or link == "" or Auctionworthy:Secret(link) then
+	if type(link) ~= "string" or link == "" or addon:Secret(link) then
 		button.AuctionworthyDirty = nil
 		HideMark(button)
 		return
 	end
-	if Auctionworthy:ScanBusy() then
+	if addon:ScanBusy() then
 		button.AuctionworthyDirty = true
 		HideMark(button)
 		return
 	end
-	local line = Auctionworthy:ItemSellLine(link)
+	local line = addon:ItemSellLine(link)
 	button.AuctionworthyDirty = nil
 	if type(line) == "string" and line:sub(1, 6) == "AH it:" then
 		ShowMark(button, "A", GREEN)
@@ -64,7 +69,8 @@ local function Paint(button, info)
 end
 
 local function RefreshDirty()
-	if Auctionworthy:ScanBusy() then
+	local addon = Addon()
+	if not addon or addon:ScanBusy() then
 		return
 	end
 	for button in pairs(seen) do

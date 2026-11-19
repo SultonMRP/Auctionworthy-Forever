@@ -83,6 +83,9 @@ local function OnClick(chatFrame, item)
 	if type(sender) ~= "string" or sender == "" then
 		return
 	end
+	if Auctionworthy.PreferListedLink then
+		item = Auctionworthy:PreferListedLink(item, ItemRefTooltip)
+	end
 	WhisperOwner(item, sender)
 end
 
@@ -126,6 +129,39 @@ local function Install()
 	if type(SetItemRef) == "function" then
 		hooksecurefunc("SetItemRef", function(link, text, button, chatFrame)
 			FromHyperlink(chatFrame, link, text, button)
+		end)
+	end
+	if type(ChatEdit_InsertLink) == "function" then
+		local replacing
+		hooksecurefunc("ChatEdit_InsertLink", function(link)
+			if replacing or type(link) ~= "string" or not Auctionworthy.PreferListedLink then
+				return
+			end
+			if Auctionworthy.MouseOverChat and Auctionworthy:MouseOverChat() then
+				return
+			end
+			local fixed = Auctionworthy:PreferListedLink(link, GameTooltip)
+			if type(fixed) ~= "string" or fixed == "" or fixed == link then
+				return
+			end
+			local edit = ChatEdit_GetActiveWindow and ChatEdit_GetActiveWindow()
+			if not edit or not edit.GetText or not edit.SetText then
+				edit = ChatFrame1EditBox
+			end
+			if not edit or not edit.GetText or not edit.SetText then
+				return
+			end
+			local body = edit:GetText()
+			if type(body) ~= "string" then
+				return
+			end
+			local at = body:find(link, 1, true)
+			if not at then
+				return
+			end
+			replacing = true
+			edit:SetText(body:sub(1, at - 1) .. fixed .. body:sub(at + #link))
+			replacing = false
 		end)
 	end
 end

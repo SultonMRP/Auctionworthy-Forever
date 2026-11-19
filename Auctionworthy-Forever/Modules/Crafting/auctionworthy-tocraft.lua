@@ -109,6 +109,25 @@ local function CutFlavor(blob)
 	return strtrim(blob:gsub(",%s*$", ""))
 end
 
+local RECIPE_ITEM_PREFIXES = {
+	"pattern: ", "plans: ", "schematic: ", "recipe: ",
+	"formula: ", "manual: ", "design: ", "technique: ",
+}
+
+local function IsRecipeItemTitle(plain)
+	if type(plain) ~= "string" then
+		return false
+	end
+	local lower = strlower(plain)
+	for i = 1, #RECIPE_ITEM_PREFIXES do
+		local prefix = RECIPE_ITEM_PREFIXES[i]
+		if lower:sub(1, #prefix) == prefix then
+			return true
+		end
+	end
+	return false
+end
+
 local function ReagentBlob(lines)
 	local parts = {}
 	local capture = false
@@ -126,7 +145,16 @@ local function ReagentBlob(lines)
 			parts[#parts + 1] = plain
 		end
 	end
-	return CutFlavor(strtrim(table.concat(parts, " ")))
+	local blob = CutFlavor(strtrim(table.concat(parts, " ")))
+	if blob ~= "" then
+		return blob
+	end
+	for _, plain in ipairs(lines) do
+		if IsReagentWrap(plain) then
+			return CutFlavor(plain)
+		end
+	end
+	return ""
 end
 
 local function ParseReagents(blob)
@@ -178,6 +206,19 @@ function Auctionworthy:TooltipSpellID(tooltip)
 			end
 		end
 	end
+	if tooltip.GetPrimaryTooltipData then
+		local dataOk, data = pcall(tooltip.GetPrimaryTooltipData, tooltip)
+		if dataOk and type(data) == "table" and not Secret(data) and type(data.lines) == "table" then
+			for _, line in pairs(data.lines) do
+				if type(line) == "table" and not Secret(line) and not Secret(line.spellID) then
+					local sid = tonumber(line.spellID)
+					if sid and sid > 0 then
+						return sid
+					end
+				end
+			end
+		end
+	end
 	local tipName = tooltip.GetName and tooltip:GetName()
 	if not tipName then
 		return
@@ -200,6 +241,9 @@ function Auctionworthy:UpdateProfessionRecipeTooltip(tooltip, titlePrefix)
 	if not tooltip or (tooltip.IsForbidden and tooltip:IsForbidden()) then
 		return
 	end
+	if Auctionworthy.InCombat and Auctionworthy:InCombat() then
+		return
+	end
 	local lines = LeftLines(tooltip)
 	local title = lines[1]
 	if type(title) ~= "string" then
@@ -210,7 +254,7 @@ function Auctionworthy:UpdateProfessionRecipeTooltip(tooltip, titlePrefix)
 		if not lower:find("^" .. strlower(titlePrefix) .. ":") then
 			return
 		end
-	elseif not Auctionworthy:IsProfessionRecipeTitle(title) then
+	elseif not Auctionworthy:IsProfessionRecipeTitle(title) and not IsRecipeItemTitle(title) then
 		return
 	end
 	if HasTotalCost(lines) then
