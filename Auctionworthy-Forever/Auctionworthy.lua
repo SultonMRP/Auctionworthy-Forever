@@ -449,6 +449,33 @@ function Auctionworthy:FormatChatMoney(value)
 	return formatChatMoney(value)
 end
 
+-- profit is already scaled by qty. vendorPrice is per item.
+-- moneyFn is formatGold on tooltips (coin icons) and formatChatMoney in whispers.
+local function VendorCompareNote(profit, vendorPrice, qty, beatsVendor, moneyFn)
+	qty = tonumber(qty) or 1
+	vendorPrice = tonumber(vendorPrice) or 0
+	profit = tonumber(profit) or 0
+	moneyFn = moneyFn or formatGold
+	local extra = ""
+	if qty > 1 then
+		extra = ", x" .. qty
+	end
+	if vendorPrice <= 0 then
+		if extra ~= "" then
+			return " (x" .. qty .. ")"
+		end
+		return ""
+	end
+	if beatsVendor then
+		return " (above vendor" .. extra .. ")"
+	end
+	local below = vendorPrice * qty - profit
+	if below <= 0 then
+		return extra ~= "" and (" (vendor" .. extra .. ")") or ""
+	end
+	return " (" .. moneyFn(below) .. " below vendor" .. extra .. ")"
+end
+
 -- Other-addon globals / SVs may be missing (Auctionator off, or first run before Auctionator.lua exists).
 local function SafeGlobal(name)
 	if type(name) ~= "string" or type(_G) ~= "table" then
@@ -2122,6 +2149,20 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 			stackCount = current
 		end
 	end
+	if vendorPrice <= 0 and tooltip and tooltip.GetMoney then
+		local okMoney, money = pcall(tooltip.GetMoney, tooltip)
+		if okMoney and not Secret(money) then
+			money = tonumber(money)
+			if money and money > 0 then
+				local shown = CurrentStackCount(tooltip)
+				if shown and shown > 1 then
+					vendorPrice = math.floor(money / shown)
+				else
+					vendorPrice = money
+				end
+			end
+		end
+	end
 	local stackNote = ""
 	if stackCount > 1 then
 		stackNote = " (x" .. stackCount .. ")"
@@ -2154,10 +2195,7 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 		end
 		if verdict.profit > 0 then
 			if options.showProfitOptions then
-				local soldNote = vendorPrice > 0 and " (above vendor)" or ""
-				if stackCount > 1 then
-					soldNote = vendorPrice > 0 and (" (above vendor, x" .. stackCount .. ")") or (" (x" .. stackCount .. ")")
-				end
+				local soldNote = VendorCompareNote(verdict.profit, vendorPrice, stackCount, verdict.beatsVendor, formatGold)
 				tooltip:AddLine("Profit: " .. formatGold(verdict.profit) .. soldNote, 0, 1, 0, true)
 			end
 			if options.showDecisionText then
@@ -3331,10 +3369,7 @@ local function EmptyCrateValueLine(itemLink, qty)
 	if qty > 1 then
 		verdict.profit = verdict.profit * qty
 	end
-	local soldNote = vendorPrice > 0 and " (above vendor)" or ""
-	if qty > 1 then
-		soldNote = vendorPrice > 0 and (" (above vendor, x" .. qty .. ")") or (" (x" .. qty .. ")")
-	end
+	local soldNote = VendorCompareNote(verdict.profit, vendorPrice, qty, verdict.beatsVendor, formatChatMoney)
 	local lossNote = qty > 1 and (" (x" .. qty .. ")") or ""
 	if verdict.profit > 0 then
 		return "Empty AH value: Profit: " .. formatChatMoney(verdict.profit) .. soldNote
@@ -3449,11 +3484,14 @@ local function ItemSellLine(itemLink, qty)
 	if qty > 1 then
 		verdict.profit = verdict.profit * qty
 		local qtyNote = " (x" .. qty .. ")"
-		if verdict.profit > 0 then
-			local note = vendorPrice > 0 and (" (above vendor, x" .. qty .. ")") or qtyNote
-			line = "AH it: " .. formatChatMoney(verdict.profit) .. note
+		if verdict.beatsVendor then
+			line = "AH it: " .. formatChatMoney(verdict.profit) .. VendorCompareNote(verdict.profit, vendorPrice, qty, true, formatChatMoney)
 		elseif vendorPrice > 0 then
-			line = "Vendor it: " .. formatChatMoney(-verdict.profit) .. " loss if posted on AH" .. qtyNote
+			if verdict.profit > 0 then
+				line = "Vendor it: AH " .. formatChatMoney(verdict.profit) .. VendorCompareNote(verdict.profit, vendorPrice, qty, false, formatChatMoney)
+			else
+				line = "Vendor it: " .. formatChatMoney(-verdict.profit) .. " loss if posted on AH" .. qtyNote
+			end
 		else
 			line = "non-vendorable: " .. formatChatMoney(-verdict.profit) .. " loss if posted on AH" .. qtyNote
 		end

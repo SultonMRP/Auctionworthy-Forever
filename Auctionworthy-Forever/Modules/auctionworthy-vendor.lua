@@ -1,8 +1,9 @@
 -- Items that have a vendor sell price.
--- All profit/loss is sold-listing only: undercut auction price minus vendor value
--- and the 5% cut. Deposit is refunded on a sale, so it is not in profit. Expire or
--- cancel is on the player (not shown on the deposit line).
--- A gain says Auction it. A loss says Sell to vendor.
+-- Auction costs are the 5% cut only. Profit is what a sold listing pays
+-- (undercut price minus that cut). Deposit is refunded on a sale, so it is
+-- not in profit. Expire or cancel is on the player (not shown on the deposit line).
+-- Auction it only when that profit is strictly more than vendor. Equal or less
+-- says Sell to vendor (Auctionator's "more gold at a vendor" warning).
 -- GetItemInfo can return a 1c stub on items vendors reject (enchanting mats).
 -- Those are treated as no vendor price so they do not leak into costs or profit.
 
@@ -66,8 +67,7 @@ function Auctionworthy:VendorAuctionCut(auctionPrice)
 end
 
 function Auctionworthy:VendorAuctionCosts(auctionPrice, vendorPrice)
-	vendorPrice = tonumber(vendorPrice) or 0
-	return vendorPrice + Auctionworthy:VendorAuctionCut(auctionPrice)
+	return Auctionworthy:VendorAuctionCut(auctionPrice)
 end
 
 function Auctionworthy:VendorVerdict(auctionPrice, vendorPrice)
@@ -75,16 +75,23 @@ function Auctionworthy:VendorVerdict(auctionPrice, vendorPrice)
 	if not auctionPrice then
 		return
 	end
+	vendorPrice = tonumber(vendorPrice) or 0
 	local costs = Auctionworthy:VendorAuctionCosts(auctionPrice, vendorPrice)
 	local profit = auctionPrice - costs
 	local deposit = Auctionworthy:VendorDeposit(vendorPrice)
-	if profit > 0 then
-		local note = (tonumber(vendorPrice) or 0) > 0 and " (above vendor)" or ""
+	local beatsVendor = profit > vendorPrice
+	if vendorPrice <= 0 then
+		beatsVendor = profit > 0
+	end
+	if beatsVendor then
+		local note = vendorPrice > 0 and " (above vendor)" or ""
 		return {
 			auctionPrice = auctionPrice,
 			costs = costs,
 			deposit = deposit,
 			profit = profit,
+			vendorPrice = vendorPrice,
+			beatsVendor = true,
 			decisionText = "Auction it!",
 			red = 0,
 			green = 1,
@@ -92,15 +99,24 @@ function Auctionworthy:VendorVerdict(auctionPrice, vendorPrice)
 			chatLine = "AH it: " .. Auctionworthy:FormatChatMoney(profit) .. note,
 		}
 	end
+	local chatLine
+	if vendorPrice > 0 and profit > 0 then
+		local below = vendorPrice - profit
+		chatLine = "Vendor it: AH " .. Auctionworthy:FormatChatMoney(profit) .. " (" .. Auctionworthy:FormatChatMoney(below) .. " below vendor)"
+	else
+		chatLine = "Vendor it: " .. Auctionworthy:FormatChatMoney(-profit) .. " loss if posted on AH"
+	end
 	return {
 		auctionPrice = auctionPrice,
 		costs = costs,
 		deposit = deposit,
 		profit = profit,
+		vendorPrice = vendorPrice,
+		beatsVendor = false,
 		decisionText = "Sell to vendor!",
 		red = 1,
 		green = 0,
 		blue = 0,
-		chatLine = "Vendor it: " .. Auctionworthy:FormatChatMoney(-profit) .. " loss if posted on AH",
+		chatLine = chatLine,
 	}
 end
