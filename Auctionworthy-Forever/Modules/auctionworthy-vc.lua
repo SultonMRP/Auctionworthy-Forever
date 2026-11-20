@@ -23,7 +23,7 @@ local function Secret(value)
 end
 
 local function PublicText(value)
-	if type(value) ~= "string" or value == "" or Secret(value) then
+	if Secret(value) or type(value) ~= "string" or value == "" then
 		return
 	end
 	return value

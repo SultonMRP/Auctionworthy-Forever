@@ -40,21 +40,63 @@ local function Secret(value)
 	return issecretvalue ~= nil and issecretvalue(value)
 end
 
+-- Secret strings still report type "string". Compare only after issecretvalue.
+local function PublicString(value)
+	if Secret(value) or type(value) ~= "string" or value == "" then
+		return nil
+	end
+	return value
+end
+
 -- InCombatLockdown is the secure check; UnitAffectingCombat covers Classic if that API is missing.
+-- A secret return is treated as in combat (fail closed). Comparing it throws while tainted.
 local function InCombat()
 	if InCombatLockdown then
 		local ok, locked = pcall(InCombatLockdown)
-		if ok and not Secret(locked) and locked then
+		if ok and (Secret(locked) or locked) then
 			return true
 		end
 	end
 	if UnitAffectingCombat then
 		local ok, fighting = pcall(UnitAffectingCombat, "player")
-		if ok and not Secret(fighting) and fighting then
+		if ok and (Secret(fighting) or fighting) then
 			return true
 		end
 	end
 	return false
+end
+
+-- Feign Death is not a corpse. Ghost can be out of lockdown; still skip share clicks.
+local function PlayerDead()
+	if UnitIsFeignDeath then
+		local ok, feign = pcall(UnitIsFeignDeath, "player")
+		if ok and not Secret(feign) and feign then
+			return false
+		end
+	end
+	if UnitIsGhost then
+		local ok, ghost = pcall(UnitIsGhost, "player")
+		if ok and (Secret(ghost) or ghost) then
+			return true
+		end
+	end
+	if UnitIsDeadOrGhost then
+		local ok, dead = pcall(UnitIsDeadOrGhost, "player")
+		if ok and (Secret(dead) or dead) then
+			return true
+		end
+	end
+	if UnitIsDead then
+		local ok, dead = pcall(UnitIsDead, "player")
+		if ok and (Secret(dead) or dead) then
+			return true
+		end
+	end
+	return false
+end
+
+local function SkipClicks()
+	return InCombat() or PlayerDead()
 end
 
 local tipState = setmetatable({}, { __mode = "k" })
@@ -2478,10 +2520,10 @@ local function ShowSelfWhisper(text, who)
 end
 
 local function SendShareLine(text, channel, target)
-	if type(text) ~= "string" or text == "" or Secret(text) then
+	if not PublicString(text) then
 		return
 	end
-	if channel == "WHISPER" and (type(target) ~= "string" or target == "" or Secret(target)) then
+	if channel == "WHISPER" and not PublicString(target) then
 		return
 	end
 	if channel == "WHISPER" and IsLocalPlayer and IsLocalPlayer(target) then
@@ -2529,11 +2571,11 @@ local function RememberPratMessage(message)
 		return
 	end
 	local sender = message.PLAYERLINK
-	if type(sender) ~= "string" or sender == "" or Secret(sender) then
+	if not PublicString(sender) then
 		sender = message.PLAYER
 	end
 	local body = message.MESSAGE
-	if type(sender) ~= "string" or sender == "" or Secret(sender) or type(body) ~= "string" or Secret(body) then
+	if not PublicString(sender) or not PublicString(body) then
 		return
 	end
 	local found = false
@@ -3040,7 +3082,7 @@ local function ScanTooltip()
 	if scanTooltip then
 		return scanTooltip
 	end
-	if InCombat() then
+	if InCombat() or PlayerDead() then
 		return nil
 	end
 	local ok, tip = pcall(CreateFrame, "GameTooltip", "AuctionworthyScanTooltip", UIParent, "GameTooltipTemplate")
@@ -3187,7 +3229,7 @@ end
 
 -- Query plus one item link. A number after the link is the stack size (x10, *10, or 10).
 local function ParseQuestionLink(message)
-	if type(message) ~= "string" or message == "" or Secret(message) then
+	if not PublicString(message) then
 		return
 	end
 	local body = strtrim(message)
@@ -3523,13 +3565,19 @@ local function ReleaseShareLater()
 end
 
 local function ShareWaylaidLink(link, whisperTo)
+	if SkipClicks() then
+		if Auctionworthy.ReportClick then
+			ClickDebug(PlayerDead() and "share skipped: dead" or "share skipped: combat")
+		end
+		return
+	end
 	if type(link) ~= "string" or link == "" or Secret(link) or not link:find("item:", 1, true) then
 		if Auctionworthy.ReportClick then
 			ClickDebug("share skipped: bad link")
 		end
 		return
 	end
-	if type(whisperTo) ~= "string" or whisperTo == "" or Secret(whisperTo) then
+	if not PublicString(whisperTo) then
 		whisperTo = nil
 	end
 	local now = GetTime and GetTime() or 0
@@ -4041,7 +4089,7 @@ local function InstallScanControls()
 		if worthyScan.button and worthyScan.button.GetParent and worthyScan.button:GetParent() then
 			return
 		end
-		if InCombat() then
+		if InCombat() or PlayerDead() then
 			return
 		end
 		local parent = SafeGlobal("AuctionatorConfigFrame")
@@ -4101,8 +4149,20 @@ local function InstallScanControls()
 			end)
 		end
 	end
+	function Auctionworthy:PLAYER_REGEN_ENABLED()
+		HookWorthyScanButton()
+	end
+	function Auctionworthy:PLAYER_ALIVE()
+		HookWorthyScanButton()
+	end
+	function Auctionworthy:PLAYER_UNGHOST()
+		HookWorthyScanButton()
+	end
 	Auctionworthy:RegisterEvent("AUCTION_HOUSE_SHOW")
 	Auctionworthy:RegisterEvent("AUCTION_HOUSE_CLOSED")
+	Auctionworthy:RegisterEvent("PLAYER_REGEN_ENABLED")
+	Auctionworthy:RegisterEvent("PLAYER_ALIVE")
+	Auctionworthy:RegisterEvent("PLAYER_UNGHOST")
 
 	function Auctionworthy:ADDON_LOADED(name)
 		if name == ADDON_NAME or name == "Prat-3.0" then
@@ -4564,12 +4624,24 @@ function Auctionworthy:InCombat()
 	return InCombat()
 end
 
+function Auctionworthy:PlayerDead()
+	return PlayerDead()
+end
+
+function Auctionworthy:SkipClicks()
+	return SkipClicks()
+end
+
 function Auctionworthy:IsLocalPlayer(name)
 	return IsLocalPlayer(name) and true or false
 end
 
 function Auctionworthy:Secret(value)
 	return Secret(value)
+end
+
+function Auctionworthy:PublicString(value)
+	return PublicString(value)
 end
 
 function Auctionworthy:ItemID(link)
@@ -4615,7 +4687,7 @@ end
 local recentQuestions = {}
 
 function Auctionworthy:HandleQuestion(message, sender)
-	if type(sender) ~= "string" or sender == "" or Secret(sender) then
+	if not PublicString(sender) or not PublicString(message) then
 		return
 	end
 	if IsLocalPlayer(sender) and not options.selfCheck then
@@ -4716,7 +4788,7 @@ SlashCmdList["AUCTIONWORTHY"] = function(msg)
 		if Auctionworthy.ToggleClickDebug then
 			print("  /worthy debug — toggle key-click debug lines for this session")
 		end
-		print("  Hold the share key and click a Waylaid crate in your bags, bank, or guild bank to post the cheapest fill. Key-clicks are ignored in combat.")
+		print("  Hold the share key and click a Waylaid crate in your bags, bank, or guild bank to post the cheapest fill. Key-clicks are ignored in combat, while dead, or as a ghost.")
 		print("  Say, party, and raid clicks post to Raid, Party, or Say.")
 		print("  Your own loot link posts the same way. Someone else's loot link whispers that player.")
 		print("  A guild-chat crate whispers the person who posted it.")

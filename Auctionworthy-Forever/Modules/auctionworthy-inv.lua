@@ -56,6 +56,9 @@ local function GuildBankLink(button)
 end
 
 local function Post(link)
+	if Auctionworthy.SkipClicks and Auctionworthy:SkipClicks() then
+		return
+	end
 	if type(link) ~= "string" or link == "" then
 		return
 	end

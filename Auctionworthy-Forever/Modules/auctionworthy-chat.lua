@@ -8,15 +8,8 @@ local lastKey
 local lastAt = 0
 local hooked
 
-local function Secret(value)
-	return Auctionworthy:Secret(value)
-end
-
 function Auctionworthy:RememberPoster(message, sender)
-	if type(message) ~= "string" or type(sender) ~= "string" then
-		return
-	end
-	if message == "" or sender == "" or Secret(message) or Secret(sender) then
+	if not Auctionworthy:PublicString(message) or not Auctionworthy:PublicString(sender) then
 		return
 	end
 	local found = false
@@ -48,7 +41,7 @@ local function LastPoster(link)
 end
 
 local function WhisperOwner(link, who)
-	if type(who) ~= "string" or who == "" then
+	if not Auctionworthy:PublicString(who) then
 		return
 	end
 	local now = GetTime and GetTime() or 0
@@ -69,6 +62,9 @@ local function WhisperOwner(link, who)
 end
 
 local function OnClick(chatFrame, item)
+	if Auctionworthy.SkipClicks and Auctionworthy:SkipClicks() then
+		return
+	end
 	if not Auctionworthy:ModifierDown() then
 		return
 	end
@@ -80,7 +76,7 @@ local function OnClick(chatFrame, item)
 		return
 	end
 	sender = sender or LastPoster(item)
-	if type(sender) ~= "string" or sender == "" then
+	if not Auctionworthy:PublicString(sender) then
 		return
 	end
 	if Auctionworthy.PreferListedLink then
@@ -193,7 +189,7 @@ events:SetScript("OnEvent", function(_, event, message, sender)
 	end
 	if event == "CHAT_MSG_LOOT" then
 		local who = Auctionworthy:LineLooter(message)
-		if type(who) == "string" and who ~= "" then
+		if Auctionworthy:PublicString(who) then
 			Auctionworthy:RememberPoster(message, who)
 		end
 		return
