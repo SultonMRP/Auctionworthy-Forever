@@ -2,20 +2,22 @@
 ## Title: Auctionworthy-Forever
 ## Notes: Tooltip profit vs vendor using Auctionator prices. /auctionworthy or /worthy
 ## Author: spzilyk
-## Version: 1.1.95
-## OptionalDeps: Auctionator, Prat-3.0
-## SavedVariables: AuctionworthySavedOptions, AuctionworthyFillIDs, AuctionworthyCrateFills, AuctionworthyVendorScan, AuctionworthyAtlasNames
+## Version: 1.1.115
+## OptionalDeps: Auctionator, Prat-3.0, BagBrother, Bagnon, Bagnonium, Baganator, MyBags, WaylaidCost, ForeverDB
+## SavedVariables: AuctionworthySavedOptions, AuctionworthyFillIDs, AuctionworthyCrateFills, AuctionworthyAtlasNames, AuctionworthyDebug
 ## IconTexture: Interface\Icons\INV_Misc_Coin_01
 ## Category-enUS: Auctions
 ## AllowLoadGameType: camelot
 
 Auctionworthy.lua
+Modules/auctionworthy-options.lua
 # Modules/auctionworthy-debug.lua
-Modules/auctionworthy-vc.lua
 Modules/auctionworthy-vendor.lua
 Modules/auctionworthy-nonvendor.lua
 Modules/auctionworthy-database.lua
 Modules/auctionworthy-vdatabase.lua
+Modules/auctionworthy-wdatabase.lua
+Modules/auctionworthy-writ.lua
 Modules/Crafting/auctionworthy-atlas.lua
 Modules/Crafting/auctionworthy-tocraft.lua
 Modules/auctionworthy-inv.lua

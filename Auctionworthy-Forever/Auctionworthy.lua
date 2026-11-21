@@ -24,6 +24,8 @@ local defaultOptions = {
 	showUndercut = true,
 	showVendorValue = true,
 	selfCheck = false,
+	showBagTags = false,
+	waylaidInfo = false,
 	worthyScanAt = 0,
 	shareModifier = "ALT",
 }
@@ -214,6 +216,33 @@ local function SaveOptions()
 	AuctionworthySavedOptions = options
 end
 
+function Auctionworthy:GetOption(key)
+	return options[key]
+end
+
+function Auctionworthy:SetOption(key, value)
+	options[key] = value
+	SaveOptions()
+end
+
+function Auctionworthy:ShareModifiers()
+	return SHARE_MODIFIERS
+end
+
+function Auctionworthy:ShareModifierLabel(key)
+	return ShareModifierLabel(key or options.shareModifier)
+end
+
+function Auctionworthy:CrateQueryMax()
+	return CRATE_QUERY_MAX
+end
+
+function Auctionworthy:CommitCrateQuery(text)
+	options.crateQuery = StoredCrateQuery(text)
+	SaveOptions()
+	return CrateQueryPrefix()
+end
+
 local fillIDs = {}
 
 local function FillNameKey(name)
@@ -344,12 +373,10 @@ function Auctionworthy:NamedItemIDs()
 			add(id)
 		end
 	end
-	local vendor = AuctionworthyVendorDB
-	if type(vendor) == "table" then
-		for _, row in pairs(vendor) do
-			if type(row) == "table" then
-				add(row.itemid)
-			end
+	local byID = AuctionworthyVendorByID
+	if type(byID) == "table" then
+		for id in pairs(byID) do
+			add(id)
 		end
 	end
 	local removed = AuctionworthyRemovedIDs
@@ -554,6 +581,45 @@ local function getFillAuctionPrice(link, itemID)
 		return price
 	end
 	return link and getAuctionPrice(link) or nil
+end
+
+local function VendorListingRow(itemID)
+	itemID = tonumber(itemID)
+	if not itemID or itemID < 1 then
+		return
+	end
+	local byID = AuctionworthyVendorByID
+	if type(byID) ~= "table" then
+		return
+	end
+	local row = byID[itemID]
+	if type(row) == "table" then
+		return row
+	end
+end
+
+local function VendorUnitPrice(itemID)
+	local row = VendorListingRow(itemID)
+	if not row or row.limited then
+		return
+	end
+	local price = tonumber(row.price)
+	if not price or price <= 0 then
+		return
+	end
+	local pack = tonumber(row.pack) or 1
+	if pack < 1 then
+		pack = 1
+	end
+	return price / pack
+end
+
+local function getFillUnitPrice(link, itemID)
+	itemID = tonumber(itemID)
+	if not itemID and type(link) == "string" then
+		itemID = tonumber(link:match("item:(%d+)"))
+	end
+	return VendorUnitPrice(itemID) or getFillAuctionPrice(link, itemID)
 end
 
 -- Read-only copies from Auctionator.lua (AUCTIONATOR_CONFIG) / per-character
@@ -765,6 +831,17 @@ local function ItemInfo(itemLink)
 		vendorPrice = Auctionworthy:VendorSellPrice(vendorPrice, classID, subclassID, itemType, subType)
 	end
 	return name, link, quality, ilvl, minLevel, itemType, subType, stackSize, equipLoc, texture, vendorPrice, classID, subclassID, bindType
+end
+
+-- Forever bindType: 0 none, 1 pickup, 2 equip, 3 use, 4 quest.
+-- classID 12 is not quest-bound. BoP (1) can still have vendor copper
+-- (Sporid Cape, Runed Silver Rod) and still cannot AH. See wow_forever_quest_items.txt.
+local function BindBlocksAuction(bindType)
+	if Secret(bindType) then
+		return false
+	end
+	bindType = tonumber(bindType)
+	return bindType == 1 or bindType == 4
 end
 
 local function isSoulboundTooltip(tooltip)
@@ -1966,7 +2043,7 @@ local function NoteUnresolvedFill(name)
 		return
 	end
 	local known = KnownFillID(name) or tonumber(fillIDs[key]) or auctionNames[key] or ScanItemID(name)
-	if known and (getAuctionPriceByItemID(known) or AuctionatorHasItem(known)) then
+	if known and (VendorUnitPrice(known) or getAuctionPriceByItemID(known) or AuctionatorHasItem(known)) then
 		if not KnownFillID(name) and fillIDs[key] ~= known then
 			AssignFillID(name, known)
 		end
@@ -1989,14 +2066,14 @@ local function updateWaylaidCrateTooltip(tooltip, itemLink)
 		end
 		local link = FillItemLink(bundle.name, bundle.itemID)
 		bundle.itemID = tonumber(bundle.itemID) or ItemIDFromLink(link)
-		local unit = getFillAuctionPrice(link, bundle.itemID) or liveUnit[FillNameKey(bundle.name)]
+		local unit = getFillUnitPrice(link, bundle.itemID) or liveUnit[FillNameKey(bundle.name)]
 		if not unit then
 			NoteUnresolvedFill(bundle.name)
 			local found = KnownFillID(bundle.name) or CachedFillID(bundle.name) or auctionNames[FillNameKey(bundle.name)]
 			if found and found ~= bundle.itemID then
 				bundle.itemID = found
 				link = FillItemLink(bundle.name, found)
-				unit = getFillAuctionPrice(link, bundle.itemID)
+				unit = getFillUnitPrice(link, bundle.itemID)
 			end
 			if not unit and next(pendingFillNames) then
 				HarvestLoadedAuctions(true, 500)
@@ -2031,22 +2108,212 @@ local function AddCrateSectionDivider(tooltip)
 	tooltip:AddLine("-= empty crate auction values =-", 0.55, 0.55, 0.58, true)
 end
 
-local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill)
-	local _, _, _, _, _, _, _, stackSize, _, _, vendorPrice, _, _, bindType = ItemInfo(itemLink)
-	if isSoulboundTooltip(tooltip) then
-		return false
+local function TooltipOwnerFrame(tooltip)
+	if not tooltip or not tooltip.GetOwner then
+		return
 	end
-	if not emptyCrate then
-		if Secret(vendorPrice) or Secret(stackSize) or Secret(bindType) then
+	local ok, owner = pcall(tooltip.GetOwner, tooltip)
+	if ok then
+		return owner
+	end
+end
+
+local function FramePublicName(frame)
+	if not frame or not frame.GetName then
+		return
+	end
+	local ok, name = pcall(frame.GetName, frame)
+	if ok then
+		return PublicString(name)
+	end
+end
+
+local function IsMerchantTooltip(tooltip)
+	local frame = TooltipOwnerFrame(tooltip)
+	for _ = 1, 10 do
+		if not frame then
 			return false
 		end
-		if bindType == 1 or bindType == 4 then
+		local name = FramePublicName(frame)
+		if name and (name:find("Merchant", 1, true) or name:find("Buyback", 1, true)) then
+			return true
+		end
+		if frame == MerchantFrame then
+			return true
+		end
+		if not frame.GetParent then
 			return false
+		end
+		local ok, parent = pcall(frame.GetParent, frame)
+		if not ok then
+			return false
+		end
+		frame = parent
+	end
+	return false
+end
+
+local function MerchantSlotIndex(frame)
+	local cur = frame
+	for _ = 1, 10 do
+		if not cur then
+			return
+		end
+		local name = FramePublicName(cur)
+		if name then
+			local n = name:match("MerchantItem(%d+)")
+			if n then
+				return tonumber(n)
+			end
+		end
+		if not cur.GetParent then
+			return
+		end
+		local ok, parent = pcall(cur.GetParent, cur)
+		if not ok then
+			return
+		end
+		cur = parent
+	end
+end
+
+function Auctionworthy:MerchantSlotIndex(frame)
+	return MerchantSlotIndex(frame)
+end
+
+-- Forever: GetMerchantItemInfo is often missing. C_MerchantFrame.GetItemInfo.price
+-- is copper you pay this merchant. sell-to-vendor is still C_Item.GetItemInfo.
+local function MerchantListing(index)
+	index = tonumber(index)
+	if not index then
+		return
+	end
+	if C_MerchantFrame and C_MerchantFrame.GetItemInfo then
+		local ok, info = pcall(C_MerchantFrame.GetItemInfo, index)
+		if ok and type(info) == "table" then
+			local function Count(value)
+				if Secret(value) then
+					return
+				end
+				value = tonumber(value)
+				if value and value > 0 then
+					return value
+				end
+			end
+			local price = Count(info.price)
+			if info.price == 0 and not Secret(info.price) then
+				price = 0
+			end
+			local pack = 1
+			local function Bigger(value)
+				value = Count(value)
+				if value and value > pack then
+					pack = value
+				end
+			end
+			Bigger(info.quantity)
+			Bigger(info.numItems)
+			Bigger(info.stackCount)
+			local btn = _G["MerchantItem" .. index .. "ItemButton"]
+			if btn then
+				if GetItemButtonCount then
+					local okCount, n = pcall(GetItemButtonCount, btn)
+					if okCount then
+						Bigger(n)
+					end
+				end
+				if btn.Count and btn.Count.GetText then
+					local okText, text = pcall(btn.Count.GetText, btn.Count)
+					if okText then
+						Bigger(text)
+					end
+				end
+			end
+			local avail = info.numAvailable
+			local limited = false
+			if not Secret(avail) and avail ~= nil then
+				avail = tonumber(avail)
+				if avail and avail ~= -1 then
+					limited = true
+				end
+			end
+			local extended = info.hasExtendedCost
+			if Secret(extended) then
+				extended = nil
+			end
+			return price, pack or 1, extended and true or false, limited
+		end
+	end
+end
+
+function Auctionworthy:MerchantListing(index)
+	return MerchantListing(index)
+end
+
+local function MerchantCostText(index)
+	index = tonumber(index)
+	if not index or not GetMerchantItemCostInfo then
+		return
+	end
+	local ok, n = pcall(GetMerchantItemCostInfo, index)
+	if not ok or Secret(n) or type(n) ~= "number" or n < 1 then
+		return
+	end
+	local parts = {}
+	for i = 1, n do
+		if GetMerchantItemCostItem then
+			local okItem, tex, amt, link, currName = pcall(GetMerchantItemCostItem, index, i)
+			if okItem then
+				local label = PublicString(currName)
+				if not label and type(link) == "string" and not Secret(link) then
+					label = link:match("%[(.-)%]")
+				end
+				if not Secret(amt) then
+					amt = tonumber(amt)
+				else
+					amt = nil
+				end
+				if label and amt and amt > 0 then
+					parts[#parts + 1] = amt .. " " .. label
+				end
+			end
+		end
+	end
+	if #parts > 0 then
+		return table.concat(parts, ", ")
+	end
+end
+
+function Auctionworthy:MerchantCostText(index)
+	return MerchantCostText(index)
+end
+
+function Auctionworthy:IsMerchantTooltip(tooltip)
+	return IsMerchantTooltip(tooltip)
+end
+
+local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill)
+	local _, _, _, _, _, _, _, stackSize, _, _, vendorPrice, _, _, bindType = ItemInfo(itemLink)
+	local merchantTip = IsMerchantTooltip(tooltip)
+	if not merchantTip then
+		if isSoulboundTooltip(tooltip) then
+			return false
+		end
+		if not emptyCrate then
+			if Secret(vendorPrice) or Secret(stackSize) or Secret(bindType) then
+				return false
+			end
+			if BindBlocksAuction(bindType) then
+				return false
+			end
+		elseif Secret(vendorPrice) then
+			vendorPrice = 0
 		end
 	elseif Secret(vendorPrice) then
 		vendorPrice = 0
 	end
 	vendorPrice = tonumber(vendorPrice) or 0
+	local skipAuction = merchantTip and (BindBlocksAuction(bindType) or isSoulboundTooltip(tooltip))
 
 	if emptyCrate and afterFill then
 		AddCrateSectionDivider(tooltip)
@@ -2063,18 +2330,34 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 		if not owner or Secret(owner) then
 			return
 		end
-		local shown = owner.itemInfo
-		if type(shown) == "table" then
-			local count = shown.itemCount
-			if not Secret(count) then
-				count = tonumber(count)
-				if count and count > 0 then
-					return count
-				end
+		local function PositiveCount(value)
+			if Secret(value) then
+				return
+			end
+			value = tonumber(value)
+			if value and value > 0 then
+				return value
 			end
 		end
-		local slot
-		if owner.GetID then
+		local shown = owner.itemInfo
+		if type(shown) == "table" then
+			local count = PositiveCount(shown.itemCount or shown.stackCount)
+			if count then
+				return count
+			end
+		end
+		local count = PositiveCount(owner.Count or owner.count or owner.stackCount)
+		if count then
+			return count
+		end
+		local bag, slot
+		if type(owner.GetSlotAndBagID) == "function" then
+			local ok, slotID, bagID = pcall(owner.GetSlotAndBagID, owner)
+			if ok then
+				slot, bag = slotID, bagID
+			end
+		end
+		if slot == nil and owner.GetID then
 			slot = owner:GetID()
 		end
 		if Secret(slot) then
@@ -2091,19 +2374,16 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 		if type(ownerName) == "string" and not Secret(ownerName) and ownerName:find("GuildBank", 1, true) and GetGuildBankItemInfo and GetCurrentGuildBankTab then
 			local tab = GetCurrentGuildBankTab()
 			if not Secret(tab) and tab then
-				local _, count = GetGuildBankItemInfo(tab, slot)
-				if not Secret(count) then
-					count = tonumber(count)
-					if count and count > 0 then
-						return count
-					end
-				end
+				local _, gcount = GetGuildBankItemInfo(tab, slot)
+				return PositiveCount(gcount)
 			end
 			return
 		end
-		local bag
-		if owner.GetBagID then
-			bag = owner:GetBagID()
+		if bag == nil and owner.GetBagID then
+			local ok, value = pcall(owner.GetBagID, owner)
+			if ok then
+				bag = value
+			end
 		end
 		if bag == nil and owner.GetParent then
 			local parent = owner:GetParent()
@@ -2121,47 +2401,54 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 		if C_Container and C_Container.GetContainerItemInfo then
 			local info = C_Container.GetContainerItemInfo(bag, slot)
 			if type(info) == "table" then
-				local count = info.stackCount
-				if not Secret(count) then
-					count = tonumber(count)
-					if count and count > 0 then
-						return count
-					end
+				local n = PositiveCount(info.stackCount)
+				if n then
+					return n
 				end
 			end
 		end
 		if GetContainerItemInfo then
-			local _, count = GetContainerItemInfo(bag, slot)
-			if not Secret(count) then
-				count = tonumber(count)
-				if count and count > 0 then
-					return count
-				end
-			end
+			local _, n = GetContainerItemInfo(bag, slot)
+			return PositiveCount(n)
 		end
 	end
 
-	local shiftDown = IsShiftKeyDown and IsShiftKeyDown()
-	local stackCount = 1
-	if not Secret(shiftDown) and shiftDown and options.showFullStack then
-		local current = CurrentStackCount(tooltip)
-		if current and current > 1 then
-			stackCount = current
-		end
-	end
-	if vendorPrice <= 0 and tooltip and tooltip.GetMoney then
+	local tooltipMoney
+	if not merchantTip and tooltip and tooltip.GetMoney then
 		local okMoney, money = pcall(tooltip.GetMoney, tooltip)
 		if okMoney and not Secret(money) then
 			money = tonumber(money)
 			if money and money > 0 then
-				local shown = CurrentStackCount(tooltip)
-				if shown and shown > 1 then
-					vendorPrice = math.floor(money / shown)
-				else
-					vendorPrice = money
-				end
+				tooltipMoney = money
 			end
 		end
+	end
+	local hoveredCount
+	if merchantTip then
+		local idx = MerchantSlotIndex(TooltipOwnerFrame(tooltip))
+		local _, pack = MerchantListing(idx)
+		if pack and pack > 1 then
+			hoveredCount = pack
+		end
+		hoveredCount = hoveredCount or 1
+	else
+		hoveredCount = CurrentStackCount(tooltip)
+		if (not hoveredCount or hoveredCount < 1) and tooltipMoney and vendorPrice > 0 and tooltipMoney >= vendorPrice then
+			local inferred = math.floor((tooltipMoney / vendorPrice) + 0.01)
+			if inferred >= 1 then
+				hoveredCount = inferred
+			end
+		end
+		if not hoveredCount or hoveredCount < 1 then
+			hoveredCount = 1
+		end
+		if tooltipMoney and tooltipMoney > 0 then
+			vendorPrice = math.floor((tooltipMoney / hoveredCount) + 0.5)
+		end
+	end
+	local stackCount = 1
+	if options.showFullStack then
+		stackCount = hoveredCount
 	end
 	local stackNote = ""
 	if stackCount > 1 then
@@ -2178,8 +2465,31 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 		end
 	end
 
-	if options.showVendorValue and vendorPrice > 0 then
+	if vendorPrice > 0 and (options.showVendorValue or merchantTip) then
 		tooltip:AddLine("Vendor: " .. formatGold(vendorPrice * stackCount), 1, 0.82, 0, true)
+	end
+	-- Shop list already shows listing. Bags/bank: compiled vendor listing.
+	if not merchantTip then
+		local itemID = ItemIDFromLink(itemLink)
+		local row = VendorListingRow(itemID)
+		if type(row) == "table" then
+			local buy = tonumber(row.price)
+			local note = ""
+			local pack = tonumber(row.pack)
+			if pack and pack > 1 then
+				note = note .. " (" .. pack .. ")"
+			end
+			if row.limited then
+				note = note .. " (limited)"
+			end
+			if buy and buy > 0 then
+				tooltip:AddLine("Merchant: " .. formatGold(buy) .. note, 1, 0.82, 0, true)
+			end
+		end
+	end
+
+	if skipAuction then
+		return true
 	end
 
 	if verdict then
@@ -2195,8 +2505,11 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 		end
 		if verdict.profit > 0 then
 			if options.showProfitOptions then
+				tooltip:AddLine("Profit: " .. formatGold(verdict.profit), 0, 1, 0, true)
 				local soldNote = VendorCompareNote(verdict.profit, vendorPrice, stackCount, verdict.beatsVendor, formatGold)
-				tooltip:AddLine("Profit: " .. formatGold(verdict.profit) .. soldNote, 0, 1, 0, true)
+				if type(soldNote) == "string" and soldNote ~= "" then
+					tooltip:AddLine((soldNote:gsub("^%s+", "")), 0, 1, 0, true)
+				end
 			end
 			if options.showDecisionText then
 				tooltip:AddLine(verdict.decisionText, verdict.red, verdict.green, verdict.blue, true)
@@ -2354,7 +2667,7 @@ local function updateTooltip(tooltip, itemLink)
 			return
 		end
 	end
-	local emptyCrate = IsWaylaidCrateName(name) or IsWaylaidCrateName(titlePlain)
+	local emptyCrate = options.waylaidInfo and (IsWaylaidCrateName(name) or IsWaylaidCrateName(titlePlain))
 	local added = false
 	if emptyCrate then
 		st.busy = true
@@ -3315,7 +3628,7 @@ local function CheapestFillLine(bundles, qty)
 	local best
 	for _, bundle in ipairs(bundles) do
 		local itemLink = FillItemLink(bundle.name, bundle.itemID)
-		local unit = getFillAuctionPrice(itemLink, ItemIDFromLink(itemLink) or bundle.itemID)
+		local unit = getFillUnitPrice(itemLink, ItemIDFromLink(itemLink) or bundle.itemID)
 		if unit then
 			local total = math.floor(bundle.qty * unit)
 			if not best or total < best.total then
@@ -3450,19 +3763,10 @@ local function ItemSellLine(itemLink, qty)
 		return nil, true
 	end
 	local blocked
-	if not Secret(bindType) then
-		bindType = tonumber(bindType)
-		if bindType == 1 or bindType == 4 then
-			blocked = true
-		end
+	if BindBlocksAuction(bindType) then
+		blocked = true
 	end
-	if not blocked and not Secret(classID) then
-		classID = tonumber(classID)
-		local questClass = Enum and Enum.ItemClass and Enum.ItemClass.Questitem or 12
-		if classID == questClass then
-			blocked = true
-		end
-	end
+	-- Quest class (12) is not enough to skip. Bind 1 / 4 still cannot post.
 	if blocked then
 		return "Can not be posted on auction house, sorry"
 	end
@@ -3474,6 +3778,9 @@ local function ItemSellLine(itemLink, qty)
 	local marketUnit = getAuctionPrice(itemLink) or getAuctionPrice(pricedLink) or getAuctionPriceByItemID(id)
 	local auctionPrice = applyUndercut(marketUnit)
 	if type(auctionPrice) ~= "number" then
+		if vendorPrice > 0 then
+			return "Vendor it: no auction data"
+		end
 		return "No Auction Data"
 	end
 	local verdict = SellVerdict(auctionPrice, vendorPrice)
@@ -3629,16 +3936,27 @@ local function ShareWaylaidLink(link, whisperTo)
 	lastShareAt = now
 	shareWhisperTo = whisperTo
 
-	local function shownCrateName()
+	local function shownBracketName()
 		if type(link) ~= "string" or Secret(link) then
 			return
 		end
-		local lower = strlower(link)
-		local startAt, endAt = lower:find("%[waylaid crate[^%]]*%]")
-		if not startAt then
-			return
+		return link:match("|h%[(.-)%]|h")
+	end
+	local function sendSharePair(line1, second)
+		local target = shareWhisperTo
+		if type(target) == "string" and target ~= "" and not Secret(target) then
+			local reply = line1 .. ": " .. second
+			if #reply > 255 then
+				SendShareLine(line1, "WHISPER", target)
+				reply = second
+			end
+			SendShareLine(reply, "WHISPER", target)
+		else
+			local channel = ShareChannel()
+			SendShareLine(line1, channel)
+			SendShareLine(second, channel)
 		end
-		return link:sub(startAt + 1, endAt - 1)
+		ReleaseShareLater()
 	end
 	local function begin()
 		local name, full = ItemInfo(link)
@@ -3649,17 +3967,23 @@ local function ShareWaylaidLink(link, whisperTo)
 			full = nil
 		end
 		if type(name) ~= "string" or name == "" then
-			name = shownCrateName()
+			name = shownBracketName()
 		end
-		if not IsWaylaidCrateName(name) and not IsKnownCrateID(ItemIDFromLink(link)) then
+		local itemID = ItemIDFromLink(full or link)
+		local isCrate = IsWaylaidCrateName(name) or IsKnownCrateID(itemID)
+		local writCost, writExtra
+		if not isCrate and Auctionworthy.WritQueryLines then
+			writCost, writExtra = Auctionworthy:WritQueryLines(full or link, 1)
+		end
+		if not isCrate and not writCost then
 			if Auctionworthy.ReportClick then
-				ClickDebug("share skipped: not a crate")
+				ClickDebug("share skipped: not a crate or writ")
 			end
 			shareBusy = false
 			return
 		end
 		shareBusy = true
-		local line1 = "[Waylaid Crate]"
+		local line1 = isCrate and "[Waylaid Crate]" or "[Craftsman's Writ]"
 		if type(name) == "string" and name ~= "" then
 			line1 = "[" .. name .. "]"
 		end
@@ -3668,27 +3992,24 @@ local function ShareWaylaidLink(link, whisperTo)
 		elseif link:find("|H", 1, true) then
 			line1 = link
 		end
+		if writCost then
+			local second = writCost
+			if type(writExtra) == "string" and writExtra ~= "" and #second + 3 + #writExtra <= 255 then
+				second = second .. " · " .. writExtra
+			end
+			if Auctionworthy.ReportClick then
+				ClickDebug("share writ " .. tostring(name))
+			end
+			sendSharePair(line1, second)
+			return
+		end
 		local function sendBundles(bundles)
 			if #bundles == 0 then
 				print("|cffff7f00Auctionworthy-Forever:|r Couldn't read that crate's fill list. Click it once more.")
 				ReleaseShareLater()
 				return
 			end
-			local second = CheapestFillLine(bundles)
-			local target = shareWhisperTo
-			if type(target) == "string" and target ~= "" and not Secret(target) then
-				local reply = line1 .. ": " .. second
-				if #reply > 255 then
-					SendShareLine(line1, "WHISPER", target)
-					reply = second
-				end
-				SendShareLine(reply, "WHISPER", target)
-			else
-				local channel = ShareChannel()
-				SendShareLine(line1, channel)
-				SendShareLine(second, channel)
-			end
-			ReleaseShareLater()
+			sendSharePair(line1, CheapestFillLine(bundles))
 		end
 		local cached = CachedCrateBundles(full or link)
 		if Auctionworthy.ReportClick then
@@ -4056,6 +4377,10 @@ local function InstallScanControls()
 	end
 
 	local function StartWorthyScan()
+		if SkipClicks() then
+			WorthyPrint("Can't start Worthy Scan in combat, while dead, or as a ghost.")
+			return
+		end
 		if worthyScan.inProgress then
 			WorthyPrint("Worthy Scan already running.")
 			return
@@ -4150,6 +4475,10 @@ local function InstallScanControls()
 		local anchor = parent.OptionsButton or parent.ScanButton
 		btn:SetPoint("TOPRIGHT", anchor, "TOPLEFT", -3, 0)
 		btn:SetScript("OnClick", function()
+			if SkipClicks() then
+				WorthyPrint("Can't start Worthy Scan in combat, while dead, or as a ghost.")
+				return
+			end
 			local ok, err = pcall(StartWorthyScan)
 			if not ok then
 				WorthyPrint("Scan failed to start: " .. tostring(err))
@@ -4221,6 +4550,9 @@ local function InstallScanControls()
 			HookAuctionatorScan()
 			HookWorthyScanButton()
 			RefreshAuctionatorConfig(false)
+			if Auctionworthy.EnsureOptionsPanel then
+				Auctionworthy.EnsureOptionsPanel()
+			end
 			return
 		end
 		if name == "Auctionator" then
@@ -4238,6 +4570,9 @@ local function InstallScanControls()
 		HookAuctionatorScan()
 		HookWorthyScanButton()
 		RefreshAuctionatorConfig(false)
+		if Auctionworthy.EnsureOptionsPanel then
+			Auctionworthy.EnsureOptionsPanel()
+		end
 		if not AuctionatorReady() then
 			print("|cffff7f00Auctionworthy-Forever:|r Auctionator is off. Prices stay empty until you enable it. /worthy refresh after it loads.")
 		end
@@ -4249,182 +4584,6 @@ local function InstallScanControls()
 	end
 end
 InstallScanControls()
-
-local function openOptionsPanel()
-	if AuctionworthyOptionsFrame then
-		AuctionworthyOptionsFrame:Show()
-		return
-	end
-	if InCombat() then
-		print("|cffff7f00Auctionworthy-Forever:|r Options wait until you leave combat.")
-		return
-	end
-
-	local template = BackdropTemplateMixin and "BackdropTemplate" or nil
-	local frame = CreateFrame("Frame", "AuctionworthyOptionsFrame", UIParent, template)
-	frame:SetSize(400, 570)
-	frame:SetPoint("CENTER")
-	frame:SetFrameStrata("DIALOG")
-	frame:SetClampedToScreen(true)
-	if frame.SetBackdrop then
-		frame:SetBackdrop({
-			bgFile = "Interface/Tooltips/UI-Tooltip-Background",
-			edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
-			tile = true, tileSize = 16, edgeSize = 16,
-			insets = { left = 4, right = 4, top = 4, bottom = 4 },
-		})
-		frame:SetBackdropColor(0, 0, 0, 1)
-	end
-	frame:EnableMouse(true)
-	frame:SetMovable(true)
-	frame:RegisterForDrag("LeftButton")
-	frame:SetScript("OnDragStart", frame.StartMoving)
-	frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
-	tinsert(UISpecialFrames, "AuctionworthyOptionsFrame")
-
-	local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-	title:SetPoint("TOP", 0, -10)
-	title:SetText("Auctionworthy-Forever Settings")
-
-	local info = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-	info:SetPoint("TOPLEFT", 20, -40)
-	info:SetJustifyH("LEFT")
-	info:SetWidth(360)
-	info:SetText("Auctionator prices on tooltips. Hold Shift for the stack you are on.")
-
-	local checkboxes = {
-		{ label = "Show Auction Costs", key = "showAuctionCosts" },
-		{ label = "Show Auction Price", key = "showAuctionPrice" },
-		{ label = "Show Profit/Loss Options", key = "showProfitOptions" },
-		{ label = "Show No Auction Data", key = "showNoAuctionData" },
-		{ label = "Shift prices the current stack", key = "showFullStack" },
-		{ label = "Show Decision Text", key = "showDecisionText" },
-		{ label = "Apply Auctionator undercut", key = "applyUndercut" },
-		{ label = "Show Undercut", key = "showUndercut" },
-		{ label = "Show vendor value", key = "showVendorValue" },
-		{ label = "Self check", key = "selfCheck" },
-	}
-
-	local yOffset = -72
-	for i, checkbox in ipairs(checkboxes) do
-		local cb = CreateFrame("CheckButton", "AuctionworthyOption" .. i, frame, "UICheckButtonTemplate")
-		cb:SetPoint("TOPLEFT", 20, yOffset)
-		local label = _G[cb:GetName() .. "Text"]
-		label:SetFontObject(GameFontHighlight)
-		label:SetText(checkbox.label)
-		cb:SetChecked(options[checkbox.key] and true or false)
-		cb:SetScript("OnClick", function(self)
-			options[checkbox.key] = self:GetChecked() and true or false
-			SaveOptions()
-		end)
-		yOffset = yOffset - 30
-	end
-
-	local shareLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-	shareLabel:SetPoint("TOPLEFT", 48, yOffset - 4)
-	shareLabel:SetText("Waylaid share key")
-
-	local drop = CreateFrame("Button", "AuctionworthyShareKeyButton", frame, "UIPanelButtonTemplate")
-	drop:SetSize(80, 22)
-	drop:SetPoint("LEFT", shareLabel, "RIGHT", 12, 0)
-	drop:SetText(ShareModifierLabel(options.shareModifier))
-
-	local menu = CreateFrame("Frame", "AuctionworthyShareKeyMenu", frame, template)
-	menu:SetSize(80, 68)
-	menu:SetPoint("TOPLEFT", drop, "BOTTOMLEFT", 0, -2)
-	menu:SetFrameLevel(frame:GetFrameLevel() + 20)
-	menu:EnableMouse(true)
-	menu:Hide()
-	if menu.SetBackdrop then
-		menu:SetBackdrop({
-			bgFile = "Interface/Tooltips/UI-Tooltip-Background",
-			edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
-			tile = true, tileSize = 16, edgeSize = 16,
-			insets = { left = 3, right = 3, top = 3, bottom = 3 },
-		})
-		menu:SetBackdropColor(0, 0, 0, 1)
-	end
-
-	for i, entry in ipairs(SHARE_MODIFIERS) do
-		local row = CreateFrame("Button", nil, menu)
-		row:SetSize(74, 20)
-		row:SetPoint("TOPLEFT", 3, -4 - (i - 1) * 20)
-		local rowText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-		rowText:SetPoint("LEFT", 8, 0)
-		rowText:SetText(entry.label)
-		row:SetScript("OnEnter", function()
-			rowText:SetTextColor(1, 0.82, 0)
-		end)
-		row:SetScript("OnLeave", function()
-			rowText:SetTextColor(1, 1, 1)
-		end)
-		row:SetScript("OnClick", function()
-			options.shareModifier = entry.key
-			SaveOptions()
-			drop:SetText(entry.label)
-			menu:Hide()
-		end)
-	end
-
-	drop:SetScript("OnClick", function()
-		if menu:IsShown() then
-			menu:Hide()
-		else
-			menu:Show()
-		end
-	end)
-
-	local queryLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-	queryLabel:SetPoint("TOPLEFT", 48, yOffset - 36)
-	queryLabel:SetText("Crate Query")
-
-	local queryBox = CreateFrame("EditBox", "AuctionworthyCrateQueryBox", frame, "InputBoxTemplate")
-	queryBox:SetSize(90, 20)
-	queryBox:SetPoint("LEFT", queryLabel, "RIGHT", 16, 0)
-	queryBox:SetAutoFocus(false)
-	queryBox:SetMaxLetters(CRATE_QUERY_MAX)
-	queryBox:SetFontObject(GameFontHighlight)
-	queryBox:SetText(CrateQueryPrefix())
-	local function CommitCrateQuery(box)
-		options.crateQuery = StoredCrateQuery(box:GetText())
-		SaveOptions()
-		box:SetText(CrateQueryPrefix())
-	end
-	queryBox:SetScript("OnEditFocusGained", function(self)
-		self:HighlightText()
-	end)
-	queryBox:SetScript("OnEnterPressed", function(self)
-		CommitCrateQuery(self)
-		self:ClearFocus()
-	end)
-	queryBox:SetScript("OnEscapePressed", function(self)
-		self:SetText(CrateQueryPrefix())
-		self:ClearFocus()
-	end)
-	queryBox:SetScript("OnEditFocusLost", function(self)
-		CommitCrateQuery(self)
-	end)
-
-	local shareNote = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-	shareNote:SetPoint("TOPLEFT", 48, yOffset - 68)
-	shareNote:SetWidth(320)
-	shareNote:SetJustifyH("LEFT")
-	shareNote:SetText("Share key clicks a Waylaid crate. Query plus one item link replies with the price. A number after the link (x10, *10, or 10) is that many.")
-
-	frame:SetScript("OnHide", function()
-		menu:Hide()
-	end)
-
-	local closeButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-	closeButton:SetSize(100, 30)
-	closeButton:SetPoint("BOTTOM", 0, 10)
-	closeButton:SetText("Close")
-	closeButton:SetScript("OnClick", function()
-		frame:Hide()
-	end)
-
-	frame:Show()
-end
 
 function Auctionworthy:ModifierDown()
 	return ShareModifierDown()
@@ -4438,101 +4597,13 @@ function Auctionworthy:ShowNoAuctionData()
 	return options.showNoAuctionData and true or false
 end
 
-function Auctionworthy:MaterialUnitPrice(name)
-	if type(name) ~= "string" or name == "" or Secret(name) then
-		return
-	end
-	local id = KnownFillID(name) or CachedFillID(name) or ScanItemID(name)
-	local link = FillItemLink(name, id)
-	id = tonumber(id) or ItemIDFromLink(link)
-	local unit = getFillAuctionPrice(link, id)
-	if not unit then
-		NoteUnresolvedFill(name)
-	end
-	return unit
-end
-
-function Auctionworthy:VendorBuyPrice(name)
-	if type(name) ~= "string" or name == "" or Secret(name) then
-		return
-	end
-	local list = AuctionworthyVendorDB
-	if type(list) ~= "table" then
-		return
-	end
-	local row = list[FillNameKey(name)]
-	if type(row) ~= "table" then
-		return
-	end
-	local copper = tonumber(row.price)
-	if copper and copper > 0 then
-		return copper
-	end
-end
-
-function Auctionworthy:VendorPackSize(name)
-	if type(name) ~= "string" or name == "" or Secret(name) then
-		return 1
-	end
-	local key = FillNameKey(name)
-	local list = AuctionworthyVendorDB
-	local row = type(list) == "table" and list[key]
-	local pack = type(row) == "table" and tonumber(row.pack)
-	if pack and pack > 1 then
-		return pack
-	end
-	if key:find("vial", 1, true) then
-		return 5
-	end
-	return 1
-end
-
-function Auctionworthy:MaterialBuyPrice(name)
-	local vendor = Auctionworthy:VendorBuyPrice(name)
-	if vendor then
-		return vendor
-	end
-	return Auctionworthy:MaterialUnitPrice(name)
-end
-
-function Auctionworthy:MaterialBuyCost(name, qty)
-	qty = tonumber(qty) or 1
-	if qty < 1 then
-		qty = 1
-	end
-	local vendor = Auctionworthy:VendorBuyPrice(name)
-	if vendor then
-		local pack = Auctionworthy:VendorPackSize(name)
-		if pack < 1 then
-			pack = 1
-		end
-		return math.ceil(qty / pack) * vendor
-	end
-	local unit = Auctionworthy:MaterialUnitPrice(name)
-	if unit then
-		return qty * unit
-	end
-end
-
 function Auctionworthy:VendorRowByItemID(itemID)
-	itemID = tonumber(itemID)
-	if not itemID or itemID < 1 then
-		return
-	end
-	local list = AuctionworthyVendorDB
-	if type(list) ~= "table" then
-		return
-	end
-	for _, row in pairs(list) do
-		if type(row) == "table" and tonumber(row.itemid) == itemID then
-			return row
-		end
-	end
+	return VendorListingRow(itemID)
 end
 
 function Auctionworthy:VendorBuyPriceByItemID(itemID)
-	local row = Auctionworthy:VendorRowByItemID(itemID)
-	if not row then
+	local row = VendorListingRow(itemID)
+	if type(row) ~= "table" or row.limited then
 		return
 	end
 	local copper = tonumber(row.price)
@@ -4542,39 +4613,12 @@ function Auctionworthy:VendorBuyPriceByItemID(itemID)
 end
 
 function Auctionworthy:VendorPackSizeByItemID(itemID)
-	itemID = tonumber(itemID)
-	local row = Auctionworthy:VendorRowByItemID(itemID)
+	local row = VendorListingRow(itemID)
 	local pack = type(row) == "table" and tonumber(row.pack)
 	if pack and pack > 1 then
 		return pack
 	end
-	if itemID == 3371 or itemID == 3372 or itemID == 8925 or itemID == 18256 then
-		return 5
-	end
 	return 1
-end
-
-function Auctionworthy:MaterialBuyCostByID(itemID, qty)
-	itemID = tonumber(itemID)
-	qty = tonumber(qty) or 1
-	if not itemID or itemID < 1 then
-		return
-	end
-	if qty < 1 then
-		qty = 1
-	end
-	local vendor = Auctionworthy:VendorBuyPriceByItemID(itemID)
-	if vendor then
-		local pack = Auctionworthy:VendorPackSizeByItemID(itemID)
-		if pack < 1 then
-			pack = 1
-		end
-		return math.ceil(qty / pack) * vendor
-	end
-	local unit = getFillAuctionPrice(nil, itemID)
-	if unit then
-		return qty * unit
-	end
 end
 
 function Auctionworthy:MaterialItemID(name)
@@ -4595,8 +4639,7 @@ function Auctionworthy:MaterialItemID(name)
 	end
 end
 
--- Same unit math as Auctionator To Craft: vendor, else AH; AH if vendor is > 5x AH.
--- qty * unit. No vial packs.
+-- Vendor unit (unlimited listing / pack), else AH. AH if vendor is > 5x AH.
 function Auctionworthy:CraftReagentCost(itemID, qty)
 	itemID = tonumber(itemID)
 	qty = tonumber(qty) or 1
@@ -4606,14 +4649,7 @@ function Auctionworthy:CraftReagentCost(itemID, qty)
 	if qty < 1 then
 		qty = 1
 	end
-	local vendor
-	local addon = AuctionatorAddon()
-	if addon and addon.API and addon.API.v1 and addon.API.v1.GetVendorPriceByItemID then
-		local ok, price = pcall(addon.API.v1.GetVendorPriceByItemID, CALLER_ID, itemID)
-		if ok and ValidAuctionPrice(price) then
-			vendor = price
-		end
-	end
+	local vendor = VendorUnitPrice(itemID)
 	local auction = getAuctionPriceByItemID(itemID)
 	local unit = vendor or auction
 	if vendor and auction and vendor > 5 * auction then
@@ -4710,8 +4746,36 @@ function Auctionworthy:IsCrateLink(link)
 	return IsCrateLink(link) and true or false
 end
 
+function Auctionworthy:WaylaidInfo()
+	return options.waylaidInfo and true or false
+end
+
 function Auctionworthy:ItemSellLine(link, qty)
 	return ItemSellLine(link, qty)
+end
+
+function Auctionworthy:ShowBagTags()
+	return options.showBagTags and true or false
+end
+
+-- Green A / red V for bag icons. Waiting is true until item info is loaded.
+function Auctionworthy:ItemAVLetter(link)
+	if type(link) ~= "string" or Secret(link) or link == "" then
+		return
+	end
+	local line, waiting = ItemSellLine(link)
+	if waiting then
+		return nil, true
+	end
+	if type(line) ~= "string" then
+		return
+	end
+	if line:find("AH it:", 1, true) then
+		return "A"
+	end
+	if line:find("Vendor it:", 1, true) then
+		return "V"
+	end
 end
 
 function Auctionworthy:ReplyItemSell(link, who, qty)
@@ -4757,6 +4821,14 @@ function Auctionworthy:HandleQuestion(message, sender)
 		ReplyQueryLine(CheapestFillLine(bundles, qty), sender, toPrint)
 		ReplyQueryLine(EmptyCrateValueLine(priceLink, qty), sender, toPrint)
 		return
+	end
+	if Auctionworthy.WritQueryLines then
+		local costLine, extra = Auctionworthy:WritQueryLines(link, qty)
+		if costLine then
+			ReplyQueryLine(costLine, sender, toPrint)
+			ReplyQueryLine(extra, sender, toPrint)
+			return
+		end
 	end
 	WatchItemSell(link, sender, qty, toPrint)
 end
@@ -4821,19 +4893,22 @@ SlashCmdList["AUCTIONWORTHY"] = function(msg)
 		return
 	end
 	if msg == "help" then
-		print("|cff00ff00Auctionworthy-Forever:|r /worthy — options")
+		print("|cff00ff00Auctionworthy-Forever:|r /worthy — Options, AddOns, Auctionworthy-Forever")
 		print("  /worthy refresh — re-read Auctionator undercut (no /reload)")
 		if Auctionworthy.ToggleClickDebug then
 			print("  /worthy debug — toggle key-click debug lines for this session")
 		end
-		print("  Hold the share key and click a Waylaid crate in your bags, bank, or guild bank to post the cheapest fill. Key-clicks are ignored in combat, while dead, or as a ghost.")
+		print("  Hold the share key and click a Waylaid crate or Craftsman's Writ in your bags, bank, or guild bank. Crates post the cheapest fill; writs post the requested goods cost. Key-clicks are ignored in combat, while dead, or as a ghost.")
 		print("  Say, party, and raid clicks post to Raid, Party, or Say.")
 		print("  Your own loot link posts the same way. Someone else's loot link whispers that player.")
 		print("  A guild-chat crate whispers the person who posted it.")
 		print("  A crate whispered to you whispers that person back.")
 		print("  In guild, whisper, party, or raid, ?[item] whispers that player the AH or vendor price. Self check prints your own query to chat.")
 		print("  Worthy Scan saves each crate's fill list, so ?[crate] can answer from that cache.")
+		print("  ?[writ] replies with the requested goods cost (vendor/AH unit), same query as crates.")
 		return
 	end
-	openOptionsPanel()
+	if Auctionworthy.OpenOptions then
+		Auctionworthy:OpenOptions()
+	end
 end

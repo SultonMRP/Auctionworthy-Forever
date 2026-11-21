@@ -1,6 +1,6 @@
 -- Party, raid, say, yell, loot, and numbered channels (Trade, General).
 -- Key-click an item link whispers the person on that line.
--- Crates get the cheapest fill. Any other item gets AH / vendor values.
+-- Crates get the cheapest fill. Writs get requested-goods cost. Any other item gets AH / vendor values.
 -- Query replies (? plus one item link) are party and raid only.
 
 local posted = {}
@@ -54,7 +54,7 @@ local function WhisperOwner(link, who)
 	if Auctionworthy.ReportClick then
 		Auctionworthy:ClickDebug("chat " .. who)
 	end
-	if Auctionworthy:IsCrateLink(link) then
+	if Auctionworthy:IsCrateLink(link) or (Auctionworthy.IsWritLink and Auctionworthy:IsWritLink(link)) then
 		Auctionworthy:WhisperCrate(link, who)
 		return
 	end

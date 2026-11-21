@@ -241,7 +241,7 @@ function Auctionworthy:UpdateProfessionRecipeTooltip(tooltip, titlePrefix)
 	if not tooltip or (tooltip.IsForbidden and tooltip:IsForbidden()) then
 		return
 	end
-	if Auctionworthy.InCombat and Auctionworthy:InCombat() then
+	if Auctionworthy.SkipClicks and Auctionworthy:SkipClicks() then
 		return
 	end
 	local lines = LeftLines(tooltip)

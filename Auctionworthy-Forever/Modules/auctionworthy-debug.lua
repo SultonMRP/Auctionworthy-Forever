@@ -416,6 +416,283 @@ function Auctionworthy:ToggleClickDebug()
 	end
 end
 
+local function DumpVal(value)
+	if value == nil then
+		return "nil"
+	end
+	if Secret(value) then
+		return "<secret>"
+	end
+	return tostring(value)
+end
+
+local function FrameField(f, method)
+	if not f or type(f[method]) ~= "function" then
+		return
+	end
+	local ok, a, b, c = pcall(f[method], f)
+	if not ok then
+		return "err"
+	end
+	if b ~= nil then
+		return DumpVal(a) .. "," .. DumpVal(b) .. (c ~= nil and ("," .. DumpVal(c)) or "")
+	end
+	return DumpVal(a)
+end
+
+local function DumpOneFrame(lines, f, tag)
+	if not f then
+		lines[#lines + 1] = tag .. "=nil"
+		return
+	end
+	local name = FrameField(f, "GetName")
+	local typ = FrameField(f, "GetObjectType")
+	local shown = FrameField(f, "IsShown")
+	local vis = FrameField(f, "IsVisible")
+	local parent = f.GetParent and f:GetParent()
+	local parentName = parent and FrameField(parent, "GetName") or "nil"
+	local id = FrameField(f, "GetID")
+	local text = FrameField(f, "GetText")
+	local title = FrameField(f, "GetTitleText")
+	lines[#lines + 1] = string.format(
+		"%s name=%s type=%s shown=%s vis=%s parent=%s id=%s",
+		tag,
+		name or "?",
+		typ or "?",
+		shown or "?",
+		vis or "?",
+		parentName,
+		id or "-"
+	)
+	if text and text ~= "nil" then
+		lines[#lines + 1] = tag .. ".text=" .. text
+	end
+	if title and title ~= "nil" then
+		lines[#lines + 1] = tag .. ".title=" .. title
+	end
+	if f.selectedTab ~= nil then
+		lines[#lines + 1] = tag .. ".selectedTab=" .. DumpVal(f.selectedTab)
+	end
+end
+
+function Auctionworthy:DumpOpenFrames()
+	if Auctionworthy.SkipClicks and Auctionworthy:SkipClicks() then
+		print("|cff00ff00Auctionworthy:|r Frame dump waits until you are out of combat and alive.")
+		return
+	end
+	local lines = {}
+	local function add(key, value)
+		lines[#lines + 1] = key .. "=" .. DumpVal(value)
+	end
+	lines[#lines + 1] = "== open frames / merchant =="
+	add("MerchantFrame", MerchantFrame)
+	DumpOneFrame(lines, MerchantFrame, "MerchantFrame")
+	if MerchantFrame then
+		add("MerchantFrame.selectedTab", MerchantFrame.selectedTab)
+		if PanelTemplates_GetSelectedTab then
+			local ok, tab = pcall(PanelTemplates_GetSelectedTab, MerchantFrame)
+			add("PanelTemplates_GetSelectedTab", ok and tab or "err")
+		end
+		local okKids, kids = pcall(function()
+			return { MerchantFrame:GetChildren() }
+		end)
+		if okKids then
+			add("MerchantFrame.childCount", #kids)
+			for i = 1, #kids do
+				DumpOneFrame(lines, kids[i], "child" .. i)
+			end
+		end
+	end
+	local named = {
+		"MerchantFrameTab1",
+		"MerchantFrameTab2",
+		"MerchantBuyBackItem",
+		"MerchantRepairAllButton",
+		"GossipFrame",
+		"QuestFrame",
+		"NPCFriendshipStatusBar",
+	}
+	for i = 1, #named do
+		DumpOneFrame(lines, _G[named[i]], named[i])
+	end
+	add("GetMerchantNumItems", GetMerchantNumItems and GetMerchantNumItems())
+	add("hasC_MerchantFrame", C_MerchantFrame ~= nil)
+	add("hasGetMerchantItemInfo", type(GetMerchantItemInfo) == "function")
+	add("hasGetMerchantItemLink", type(GetMerchantItemLink) == "function")
+	if C_EventUtils and C_EventUtils.IsEventValid then
+		add("event.MERCHANT_SHOW", C_EventUtils.IsEventValid("MERCHANT_SHOW"))
+		add("event.MERCHANT_UPDATE", C_EventUtils.IsEventValid("MERCHANT_UPDATE"))
+		add("event.MERCHANT_CLOSED", C_EventUtils.IsEventValid("MERCHANT_CLOSED"))
+		add("event.MERCHANT_FILTER_ITEM_UPDATE", C_EventUtils.IsEventValid("MERCHANT_FILTER_ITEM_UPDATE"))
+	end
+	if UnitName then
+		add("unit.npc", UnitName("npc"))
+		add("unit.target", UnitName("target"))
+	end
+	if GetMouseFoci then
+		local ok, foci = pcall(GetMouseFoci)
+		if ok and type(foci) == "table" then
+			add("mouseFoci", #foci)
+			for i = 1, #foci do
+				DumpOneFrame(lines, foci[i], "focus" .. i)
+			end
+		end
+	elseif GetMouseFocus then
+		local ok, focus = pcall(GetMouseFocus)
+		if ok then
+			DumpOneFrame(lines, focus, "mouseFocus")
+		end
+	end
+	lines[#lines + 1] = "== shown named frames (merchant/vendor/buyback/gossip) =="
+	if EnumerateFrames then
+		local n = 0
+		local hit = 0
+		local f = EnumerateFrames()
+		while f and n < 2500 and hit < 80 do
+			n = n + 1
+			local okShow, shown = pcall(function()
+				return f.IsShown and f:IsShown()
+			end)
+			local okName, fname = pcall(function()
+				return f.GetName and f:GetName()
+			end)
+			local isShown = okShow and not Secret(shown) and shown == true
+			if isShown and okName and not Secret(fname) and type(fname) == "string" then
+				local lower = strlower(fname)
+				if lower:find("merchant", 1, true) or lower:find("vendor", 1, true) or lower:find("buyback", 1, true) or lower:find("gossip", 1, true) or lower:find("shop", 1, true) then
+					hit = hit + 1
+					DumpOneFrame(lines, f, "shown" .. hit)
+				end
+			end
+			f = EnumerateFrames(f)
+		end
+		add("enumerateWalked", n)
+		add("enumerateHits", hit)
+	end
+	local text = table.concat(lines, "\n")
+	print("|cff00ff00Auctionworthy:|r Open-frame dump (" .. tostring(#lines) .. " lines). Copy the popup.")
+	ShowDump(text, "frames")
+end
+
+-- Dump key list: references/Forever/wow_forever_merch_dump_format.txt (merch_check3.txt).
+function Auctionworthy:DumpMerchantHover()
+	if Auctionworthy.SkipClicks and Auctionworthy:SkipClicks() then
+		print("|cff00ff00Auctionworthy:|r Merchant dump waits until you are out of combat and alive.")
+		return
+	end
+	local tooltip = ShownTooltip()
+	local lines = {}
+	local function add(key, value)
+		lines[#lines + 1] = key .. "=" .. DumpVal(value)
+	end
+	add("merchantFrameShown", MerchantFrame and MerchantFrame.IsShown and MerchantFrame:IsShown())
+	add("numMerchantItems", GetMerchantNumItems and GetMerchantNumItems())
+	if not tooltip then
+		add("tooltip", "none")
+		ShowDump(table.concat(lines, "\n"))
+		return
+	end
+	add("tooltip", tooltip.GetName and tooltip:GetName())
+	add("isMerchantTooltip", Auctionworthy.IsMerchantTooltip and Auctionworthy:IsMerchantTooltip(tooltip))
+	if tooltip.GetMoney then
+		local ok, money = pcall(tooltip.GetMoney, tooltip)
+		add("tooltipMoney", ok and money or "err")
+	end
+	local owner = tooltip.GetOwner and tooltip:GetOwner()
+	add("ownerName", owner and owner.GetName and owner:GetName())
+	add("ownerType", owner and owner.GetObjectType and owner:GetObjectType())
+	add("ownerID", owner and owner.GetID and owner:GetID())
+	local index = Auctionworthy.MerchantSlotIndex and Auctionworthy:MerchantSlotIndex(owner)
+	if not index and owner and owner.GetID then
+		index = tonumber(owner:GetID())
+	end
+	add("merchantIndex", index)
+	add("hasGetMerchantItemInfo", type(GetMerchantItemInfo) == "function")
+	if index and type(GetMerchantItemInfo) == "function" then
+		local ok, name, texture, price, quantity, numAvailable, isPurchasable, isUsable, extendedCost = pcall(GetMerchantItemInfo, index)
+		add("legacyInfoOK", ok and "ok" or "fail")
+		if ok then
+			add("infoName", name)
+			add("infoTexture", texture)
+			add("infoPrice", price)
+			add("infoQuantity", quantity)
+			add("infoNumAvailable", numAvailable)
+			add("infoPurchasable", isPurchasable)
+			add("infoUsable", isUsable)
+			add("infoExtendedCost", extendedCost)
+		end
+	end
+	if index and GetMerchantItemLink then
+		add("merchantLink", GetMerchantItemLink(index))
+	end
+	if index and GetMerchantItemCostInfo then
+		local ok, n = pcall(GetMerchantItemCostInfo, index)
+		add("costInfoCount", ok and n or "err")
+		if ok and type(n) == "number" then
+			for i = 1, n do
+				if GetMerchantItemCostItem then
+					local tex, amt, link, currName = GetMerchantItemCostItem(index, i)
+					add("cost" .. i, DumpVal(currName or link) .. " x" .. DumpVal(amt) .. " tex=" .. DumpVal(tex))
+				end
+			end
+		end
+	end
+	if index and C_MerchantFrame and C_MerchantFrame.GetItemInfo then
+		local ok, info = pcall(C_MerchantFrame.GetItemInfo, index)
+		add("cMerchantOK", ok and "ok" or "fail")
+		if ok and type(info) == "table" then
+			for k, v in pairs(info) do
+				add("cMerchant." .. tostring(k), v)
+			end
+		end
+	end
+	local link
+	if tooltip.GetItem then
+		local ok, _, itemLink = pcall(tooltip.GetItem, tooltip)
+		if ok then
+			link = itemLink
+		end
+	end
+	add("tooltipLink", link)
+	if link and C_Item and C_Item.GetItemInfoInstant then
+		local ok, id, itemType, subType, equipLoc, icon, classID, subclassID = pcall(C_Item.GetItemInfoInstant, link)
+		add("instantOK", ok and "ok" or "fail")
+		add("instantID", id)
+		add("instantType", itemType)
+		add("instantSubType", subType)
+		add("instantEquip", equipLoc)
+		add("instantIcon", icon)
+		add("instantClass", classID)
+		add("instantSubclass", subclassID)
+	end
+	if link and C_Item and C_Item.GetItemInfo then
+		local ret = { pcall(C_Item.GetItemInfo, link) }
+		add("getItemInfoOK", ret[1] and "ok" or "fail")
+		add("getItemInfoCount", #ret - 1)
+		for i = 2, #ret do
+			add("gi" .. (i - 1), ret[i])
+		end
+		if ret[1] then
+			add("name", ret[2])
+			add("sellPrice", ret[12])
+			add("classID", ret[13])
+			add("subclassID", ret[14])
+			add("bindType", ret[15])
+			add("icon", ret[11])
+		end
+	end
+	if Auctionworthy.MerchantListing and index then
+		local listing, pack, extended = Auctionworthy:MerchantListing(index)
+		add("listingPrice", listing)
+		add("listingPack", pack)
+		add("listingExtended", extended)
+	end
+	if Auctionworthy.MerchantCostText and index then
+		add("listingCost", Auctionworthy:MerchantCostText(index))
+	end
+	ShowDump(table.concat(lines, "\n"))
+end
+
 function Auctionworthy:DumpShownTooltip()
 	local tooltip = ShownTooltip()
 	if tooltip then
@@ -765,6 +1042,14 @@ SlashCmdList.AUCTIONWORTHY = function(msg)
 		Auctionworthy:DumpShownTooltip()
 		return
 	end
+	if raw == "merch" or raw == "merchant" then
+		Auctionworthy:DumpMerchantHover()
+		return
+	end
+	if raw == "frames" or raw == "frame" then
+		Auctionworthy:DumpOpenFrames()
+		return
+	end
 	if raw == "debug" then
 		Auctionworthy:ToggleClickDebug()
 		return
@@ -774,6 +1059,8 @@ SlashCmdList.AUCTIONWORTHY = function(msg)
 			original(msg)
 		end
 		print("  /worthy dump — copy the current tooltip")
+		print("  /worthy merch — hover a merchant item, copy listing vs sell-to-vendor fields")
+		print("  /worthy frames — copy shown merchant/vendor frames and shop APIs")
 		print("  /worthy row — hover an auction list row. Saves to AuctionworthyDebug, no window")
 		print("  /worthy clear — wipe AuctionworthyDebug")
 		return

@@ -66,7 +66,7 @@ function Auctionworthy:VendorAuctionCut(auctionPrice)
 	return math.floor(auctionPrice * 0.05)
 end
 
-function Auctionworthy:VendorAuctionCosts(auctionPrice, vendorPrice)
+function Auctionworthy:VendorAuctionCosts(auctionPrice)
 	return Auctionworthy:VendorAuctionCut(auctionPrice)
 end
 
@@ -76,7 +76,7 @@ function Auctionworthy:VendorVerdict(auctionPrice, vendorPrice)
 		return
 	end
 	vendorPrice = tonumber(vendorPrice) or 0
-	local costs = Auctionworthy:VendorAuctionCosts(auctionPrice, vendorPrice)
+	local costs = Auctionworthy:VendorAuctionCosts(auctionPrice)
 	local profit = auctionPrice - costs
 	local deposit = Auctionworthy:VendorDeposit(vendorPrice)
 	local beatsVendor = profit > vendorPrice
