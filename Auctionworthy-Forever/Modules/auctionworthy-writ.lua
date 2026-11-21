@@ -1,6 +1,3 @@
--- Craftsman's Writ and Waylaid crate extras. Catalog is auctionworthy-wdatabase.lua
--- compiled from WaylaidCost (OptionalDeps; keep installed, disabled in-game).
-
 local WRITS = AuctionworthyWrits or {}
 local CRATE_META = AuctionworthyCrateMeta or {}
 local CRATE_CASH = AuctionworthyCrateCashback or {}
@@ -73,9 +70,9 @@ local function AddWritCost(tooltip, row)
 	end
 	local label = "Writ: " .. qty .. "x " .. (row.name or "item") .. ": "
 	if cost and Auctionworthy.FormatGold then
-		tooltip:AddLine(label .. Auctionworthy:FormatGold(cost), 1, 0.82, 0, true)
+		Auctionworthy:TipLine(tooltip, label .. Auctionworthy:FormatGold(cost), 1, 0.82, 0)
 	elseif Auctionworthy.ShowNoAuctionData and Auctionworthy:ShowNoAuctionData() then
-		tooltip:AddLine(label .. "No Auction Data", 1, 0, 1, true)
+		Auctionworthy:TipLine(tooltip, label .. "No Auction Data", 1, 0, 1)
 	end
 	local where
 	if row.npc and row.zone then
@@ -84,11 +81,11 @@ local function AddWritCost(tooltip, row)
 		where = row.zone or row.npc
 	end
 	if type(where) == "string" and where ~= "" then
-		tooltip:AddLine("Writ: " .. where, 0.65, 0.85, 1, true)
+		Auctionworthy:TipLine(tooltip, "Writ: " .. where, 0.65, 0.85, 1)
 	end
 	local rep = tonumber(row.rep)
 	if rep and rep > 0 then
-		tooltip:AddLine("Writ: " .. tostring(rep) .. " trade rep", 0.65, 0.85, 1, true)
+		Auctionworthy:TipLine(tooltip, "Writ: " .. tostring(rep) .. " trade rep", 0.65, 0.85, 1)
 	end
 end
 
@@ -100,7 +97,7 @@ local function AddWritUses(tooltip, needID)
 	for i = 1, #list do
 		local row = WRITS[list[i]]
 		if row and row.writ then
-			tooltip:AddLine("Writ need: " .. row.writ, 1, 0.82, 0, true)
+			Auctionworthy:TipLine(tooltip, "Writ need: " .. row.writ, 1, 0.82, 0)
 		end
 	end
 end
@@ -113,7 +110,7 @@ local function AddCrateCashback(tooltip, meta)
 	if not copper or copper < 1 or not Auctionworthy.FormatGold then
 		return
 	end
-	tooltip:AddLine("Crate cashback: " .. Auctionworthy:FormatGold(copper), 0.35, 1, 0.3, true)
+	Auctionworthy:TipLine(tooltip, "Crate cashback: " .. Auctionworthy:FormatGold(copper), 0.35, 1, 0.3)
 end
 
 local function AddCrateUses(tooltip, needID)
@@ -125,7 +122,7 @@ local function AddCrateUses(tooltip, needID)
 		local meta = CRATE_META[list[i]]
 		local label = meta and meta.name
 		if type(label) == "string" and label ~= "" then
-			tooltip:AddLine("Crate: " .. label, 1, 0.82, 0, true)
+			Auctionworthy:TipLine(tooltip, "Crate: " .. label, 1, 0.82, 0)
 		end
 	end
 end
@@ -183,6 +180,9 @@ function Auctionworthy:WritQueryLines(link, qty)
 end
 
 function Auctionworthy:UpdateWritTooltip(tooltip, data)
+	if Auctionworthy.SkipClicks and Auctionworthy:SkipClicks() then
+		return
+	end
 	if not Auctionworthy.WaylaidInfo or not Auctionworthy:WaylaidInfo() then
 		return
 	end
@@ -217,22 +217,17 @@ local function Update(tooltip, data)
 	Auctionworthy:UpdateWritTooltip(tooltip, data)
 end
 
-local function Watch(tooltip)
-	if not tooltip or not tooltip.HookScript then
-		return
-	end
-	tooltip:HookScript("OnShow", function(self)
-		Update(self)
-	end)
-end
-
-Watch(GameTooltip)
-Watch(ItemRefTooltip)
-
 if TooltipDataProcessor and Enum and Enum.TooltipDataType and Enum.TooltipDataType.Item then
 	TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, function(tooltip, data)
 		if tooltip == GameTooltip or tooltip == ItemRefTooltip then
 			Update(tooltip, data)
 		end
 	end)
+else
+	for _, name in ipairs({ "GameTooltip", "ItemRefTooltip" }) do
+		local tooltip = _G[name]
+		if tooltip and tooltip.HookScript and tooltip.HasScript and tooltip:HasScript("OnTooltipSetItem") then
+			tooltip:HookScript("OnTooltipSetItem", Update)
+		end
+	end
 end

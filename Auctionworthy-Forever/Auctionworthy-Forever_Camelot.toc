@@ -2,13 +2,18 @@
 ## Title: Auctionworthy-Forever
 ## Notes: Tooltip profit vs vendor using Auctionator prices. /auctionworthy or /worthy
 ## Author: spzilyk
-## Version: 1.1.115
-## OptionalDeps: Auctionator, Prat-3.0, BagBrother, Bagnon, Bagnonium, Baganator, MyBags, WaylaidCost, ForeverDB
+## Version: 1.1.122
+## OptionalDeps: Auctionator, Prat-3.0, BagBrother, Bagnon, Bagnonium, Baganator, MyBags, LibStub, CallbackHandler-1.0, LibDataBroker-1.1, LibDBIcon-1.0, LibSharedMedia-3.0
 ## SavedVariables: AuctionworthySavedOptions, AuctionworthyFillIDs, AuctionworthyCrateFills, AuctionworthyAtlasNames, AuctionworthyDebug
 ## IconTexture: Interface\Icons\INV_Misc_Coin_01
 ## Category-enUS: Auctions
 ## AllowLoadGameType: camelot
 
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
+Libs\LibSharedMedia-3.0\LibSharedMedia-3.0.lua
 Auctionworthy.lua
 Modules/auctionworthy-options.lua
 # Modules/auctionworthy-debug.lua
@@ -25,3 +30,7 @@ Modules/auctionworthy-chat.lua
 Modules/auctionworthy-guild.lua
 Modules/auctionworthy-whisper.lua
 Modules/auctionworthy-sell.lua
+Modules/auctionworthy-weakaura.lua
+Modules/auctionworthy-gatherlist.lua
+Modules/auctionworthy-minimap.lua
+Modules/auctionworthy-misc.lua

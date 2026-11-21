@@ -1,13 +1,3 @@
--- Waylaid crate fills. Keys on the name tables are lowercase.
--- The tooltip reads the name tables first. A crate whose recipe is in
--- AuctionworthyCrateRecipes is not written to AuctionworthyCrateFills.
---
--- Corrected from the generated crate list:
---   Greater Nether Essence is 11175. 16203 is Greater Eternal Essence.
---   Unstable Trigger is 10560. Mithril Casing is 10561.
--- Quantities are the crate spell counts, and they match the fills already
--- saved from this character's tooltips.
-
 AuctionworthyMaterialIDs = {
 	["peacebloom"] = 2447,
 	["silverleaf"] = 765,

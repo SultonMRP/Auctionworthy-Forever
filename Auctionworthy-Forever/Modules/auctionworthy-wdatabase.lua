@@ -1,8 +1,3 @@
--- Waylaid crates, cashback, and Craftsman's Writs compiled from WaylaidCost
--- 1.0.3 (Shakam; Forever 1.60.1). WaylaidCost is OptionalDeps only; keep it
--- installed and disabled, then re-run _compile_waylaid.py after its updates.
--- Crate fill recipes stay in auctionworthy-database.lua (same 30 crates).
-
 AuctionworthyWrits = {
 	[264081] = { need = 4392, qty = 1, name = "Advanced Target Dummy", writ = "Advanced Target Dummy", quest = 94281, rep = 125, npc = "Bibbly F'utzbuckle", zone = "Desolace" },
 	[264132] = { need = 15872, qty = 1, name = "Arcanite Skeleton Key", writ = "Arcanite Skeleton Key", quest = 94332, rep = 200 },

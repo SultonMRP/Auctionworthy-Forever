@@ -26,6 +26,14 @@ local defaultOptions = {
 	selfCheck = false,
 	showBagTags = false,
 	waylaidInfo = false,
+	showAllGatherProfessions = false,
+	collapseGatherHerbs = false,
+	collapseGatherOre = false,
+	collapseGatherLeathers = false,
+	showGatherList = true,
+	gatherListScale = 1,
+	gatherListAlpha = 1,
+	ignoreQuestionRequests = false,
 	worthyScanAt = 0,
 	shareModifier = "ALT",
 }
@@ -101,6 +109,26 @@ local function SkipClicks()
 	return InCombat() or PlayerDead()
 end
 
+-- Same as WaylaidCost / Auctionator: wrapped AddLine, no Show.
+-- Combat / dead / ghost: skip (layout numbers and flags can be secret).
+function Auctionworthy:TipLine(tooltip, text, r, g, b)
+	if SkipClicks() then
+		return false
+	end
+	if not tooltip or not tooltip.AddLine then
+		return false
+	end
+	if Secret(text) or type(text) ~= "string" or text == "" then
+		return false
+	end
+	tooltip:AddLine(text, r, g, b, true)
+	return true
+end
+
+local function TipLine(tooltip, text, r, g, b)
+	return Auctionworthy:TipLine(tooltip, text, r, g, b)
+end
+
 local tipState = setmetatable({}, { __mode = "k" })
 local function TipState(tooltip)
 	local s = tipState[tooltip]
@@ -133,7 +161,13 @@ local function OwnedByMinimap(tooltip)
 end
 
 local function RestoreItemWrap(tooltip)
-	if not tooltip or (tooltip.IsForbidden and tooltip:IsForbidden()) or OwnedByMinimap(tooltip) then
+	if SkipClicks() then
+		return
+	end
+	if not tooltip or OwnedByMinimap(tooltip) then
+		return
+	end
+	if tooltip.IsForbidden and tooltip:IsForbidden() then
 		return
 	end
 	local name = tooltip.GetName and tooltip:GetName()
@@ -2085,10 +2119,10 @@ local function updateWaylaidCrateTooltip(tooltip, itemLink)
 		end
 		local label = bundle.qty .. "x " .. bundle.name .. ": "
 		if unit then
-			tooltip:AddLine(label .. formatGold(bundle.qty * unit), 1, 0.82, 0, true)
+			TipLine(tooltip, label .. formatGold(bundle.qty * unit), 1, 0.82, 0)
 			added = true
 		elseif options.showNoAuctionData then
-			tooltip:AddLine(label .. "No Auction Data", 1, 0, 1, true)
+			TipLine(tooltip, label .. "No Auction Data", 1, 0, 1)
 			added = true
 		end
 	end
@@ -2105,7 +2139,7 @@ local function updateWaylaidCrateTooltip(tooltip, itemLink)
 end
 
 local function AddCrateSectionDivider(tooltip)
-	tooltip:AddLine("-= empty crate auction values =-", 0.55, 0.55, 0.58, true)
+	TipLine(tooltip, "-= empty crate auction values =-", 0.55, 0.55, 0.58)
 end
 
 local function TooltipOwnerFrame(tooltip)
@@ -2466,7 +2500,7 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 	end
 
 	if vendorPrice > 0 and (options.showVendorValue or merchantTip) then
-		tooltip:AddLine("Vendor: " .. formatGold(vendorPrice * stackCount), 1, 0.82, 0, true)
+		TipLine(tooltip, "Vendor: " .. formatGold(vendorPrice * stackCount), 1, 0.82, 0)
 	end
 	-- Shop list already shows listing. Bags/bank: compiled vendor listing.
 	if not merchantTip then
@@ -2483,7 +2517,7 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 				note = note .. " (limited)"
 			end
 			if buy and buy > 0 then
-				tooltip:AddLine("Merchant: " .. formatGold(buy) .. note, 1, 0.82, 0, true)
+				TipLine(tooltip, "Merchant: " .. formatGold(buy) .. note, 1, 0.82, 0)
 			end
 		end
 	end
@@ -2494,42 +2528,42 @@ local function updateAuctionSellTooltip(tooltip, itemLink, emptyCrate, afterFill
 
 	if verdict then
 		if options.showAuctionCosts then
-			tooltip:AddLine("Auction Costs: " .. formatGold(verdict.costs), 1, 0.82, 0, true)
+			TipLine(tooltip, "Auction Costs: " .. formatGold(verdict.costs), 1, 0.82, 0)
 			local deposit = tonumber(verdict.deposit) or 0
 			if deposit > 0 then
-				tooltip:AddLine("Deposit: " .. formatGold(deposit), 1, 0.82, 0, true)
+				TipLine(tooltip, "Deposit: " .. formatGold(deposit), 1, 0.82, 0)
 			end
 		end
 		if options.showAuctionPrice then
-			tooltip:AddLine("Auction Price: " .. formatGold(verdict.auctionPrice), 1, 0.82, 0, true)
+			TipLine(tooltip, "Auction Price: " .. formatGold(verdict.auctionPrice), 1, 0.82, 0)
 		end
 		if verdict.profit > 0 then
 			if options.showProfitOptions then
-				tooltip:AddLine("Profit: " .. formatGold(verdict.profit), 0, 1, 0, true)
+				TipLine(tooltip, "Profit: " .. formatGold(verdict.profit), 0, 1, 0)
 				local soldNote = VendorCompareNote(verdict.profit, vendorPrice, stackCount, verdict.beatsVendor, formatGold)
 				if type(soldNote) == "string" and soldNote ~= "" then
-					tooltip:AddLine((soldNote:gsub("^%s+", "")), 0, 1, 0, true)
+					TipLine(tooltip, (soldNote:gsub("^%s+", "")), 0, 1, 0)
 				end
 			end
 			if options.showDecisionText then
-				tooltip:AddLine(verdict.decisionText, verdict.red, verdict.green, verdict.blue, true)
+				TipLine(tooltip, verdict.decisionText, verdict.red, verdict.green, verdict.blue)
 			end
 		else
 			if options.showProfitOptions then
-				tooltip:AddLine("Loss: " .. formatGold(-verdict.profit) .. stackNote, 1, 0, 0, true)
+				TipLine(tooltip, "Loss: " .. formatGold(-verdict.profit) .. stackNote, 1, 0, 0)
 			end
 			if options.showDecisionText then
-				tooltip:AddLine(verdict.decisionText, verdict.red, verdict.green, verdict.blue, true)
+				TipLine(tooltip, verdict.decisionText, verdict.red, verdict.green, verdict.blue)
 			end
 		end
 	elseif options.showNoAuctionData then
-		tooltip:AddLine("No Auction Data", 1, 0, 1, true)
+		TipLine(tooltip, "No Auction Data", 1, 0, 1)
 	end
 
 	if options.showUndercut then
 		local line = undercutLine(marketUnit, stackCount)
 		if line then
-			tooltip:AddLine(line, 0.65, 0.85, 1, true)
+			TipLine(tooltip, line, 0.65, 0.85, 1)
 		end
 	end
 
@@ -2637,11 +2671,14 @@ function Auctionworthy:PreferListedLink(link, tooltip)
 	return link
 end
 
-local function updateTooltip(tooltip, itemLink)
+local function updateTooltip(tooltip, itemLink, data)
 	if tooltip and tooltip.AuctionworthySkip then
 		if tooltip.AuctionworthyOnShare and (tooltip.NumLines and tooltip:NumLines() or 0) > 0 then
 			tooltip.AuctionworthyOnShare()
 		end
+		return
+	end
+	if SkipClicks() then
 		return
 	end
 	if not tooltip or not itemLink or Secret(itemLink) then
@@ -2747,7 +2784,7 @@ end
 
 local function AttachItemTooltip(tooltip, data)
 	HookCleared(tooltip)
-	updateTooltip(tooltip, GetLinkFromTooltip(tooltip, data))
+	updateTooltip(tooltip, GetLinkFromTooltip(tooltip, data), data)
 end
 
 local function ContainerItemLink(bag, slot)
@@ -4088,8 +4125,9 @@ local function InstallHooks()
 	hooked = true
 	if TooltipDataProcessor and Enum and Enum.TooltipDataType and Enum.TooltipDataType.Item then
 		TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, AttachItemTooltip)
+	else
+		HookLegacy()
 	end
-	HookLegacy()
 end
 
 local hookedOptionsFrames = {}
@@ -4593,6 +4631,18 @@ function Auctionworthy:FormatGold(value)
 	return formatGold(value)
 end
 
+function Auctionworthy:GetAuctionPriceByItemID(itemID)
+	return getAuctionPriceByItemID(itemID)
+end
+
+function Auctionworthy:PostingPriceByItemID(itemID)
+	local market = getAuctionPriceByItemID(itemID)
+	if not market then
+		return
+	end
+	return applyUndercut(market)
+end
+
 function Auctionworthy:ShowNoAuctionData()
 	return options.showNoAuctionData and true or false
 end
@@ -4789,6 +4839,9 @@ end
 local recentQuestions = {}
 
 function Auctionworthy:HandleQuestion(message, sender)
+	if options.ignoreQuestionRequests then
+		return
+	end
 	if not PublicString(sender) or not PublicString(message) then
 		return
 	end

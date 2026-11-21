@@ -1,10 +1,3 @@
--- Vendor listings compiled from ForeverDB.net (https://foreverdb.net).
--- ForeverDB 0.72.0, data 2026-11-21.a7dd88fb, client 1.60.1.70959.
--- Only reagents used by crate fills, Craftsman's Writs, or profession recipes.
--- Cheapest unlimited listing when any exist; else cheapest limited.
--- price = copper for the pack. pack omitted when 1. limited = true if no unlimited vendor.
--- Reuse requires ForeverDB credit: ForeverDB NOTICE.txt (GPL-3.0 section 7(b)).
-
 AuctionworthyVendorByID = {
 	[159] = { price = 25, pack = 5 },
 	[765] = { price = 40, limited = true },

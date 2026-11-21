@@ -290,13 +290,13 @@ function Auctionworthy:UpdateProfessionRecipeTooltip(tooltip, titlePrefix)
 		end
 		if not cost then
 			if Auctionworthy:ShowNoAuctionData() then
-				tooltip:AddLine("Total Cost: No Auction Data", 1, 0, 1, true)
+				Auctionworthy:TipLine(tooltip, "Total Cost: No Auction Data", 1, 0, 1)
 			end
 			return
 		end
 		total = total + cost
 	end
-	tooltip:AddLine("Total Cost: " .. Auctionworthy:FormatGold(total), 1, 0.82, 0, true)
+	Auctionworthy:TipLine(tooltip, "Total Cost: " .. Auctionworthy:FormatGold(total), 1, 0.82, 0)
 end
 
 local function Update(tooltip)
@@ -327,9 +327,6 @@ local function Watch(tooltip)
 	end
 end
 
-Watch(GameTooltip)
-Watch(ItemRefTooltip)
-
 if TooltipDataProcessor and Enum and Enum.TooltipDataType then
 	if Enum.TooltipDataType.Spell then
 		TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Spell, Update)
@@ -337,4 +334,7 @@ if TooltipDataProcessor and Enum and Enum.TooltipDataType then
 	if Enum.TooltipDataType.Item then
 		TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, Update)
 	end
+else
+	Watch(GameTooltip)
+	Watch(ItemRefTooltip)
 end

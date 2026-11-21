@@ -1,0 +1,167 @@
+Auctionworthy-Forever — WeakAura / ForeverAuras reference
+Client: WoW Forever / Camelot (Interface 16001)
+Keep this file in GitHub and in the release zip. It is not loaded by the TOC.
+
+Requires Auctionworthy-Forever. Prices need Auctionator. Aura Lua is sandboxed: no pcall, no writing SavedVariables. Read the tables below. Do not call Auctionator from the aura.
+
+On-screen list (not a WeakAura): Modules/auctionworthy-gatherlist.lua. Click Herbs / Ore / Leathers to collapse. Ctrl+click a header to drag. Esc → Options → AddOns → Auctionworthy-Forever → Gather List. AuctionworthyWA is still filled for auras.
+
+------------------------------------------------------------------------
+AuctionworthyWA  (read-only global)
+------------------------------------------------------------------------
+Filled by Modules/auctionworthy-weakaura.lua. Writes are ignored.
+
+  herbalism   boolean   player has Herbalism
+  mining      boolean   player has Mining
+  skinning    boolean   player has Skinning
+  text        string    ready-to-show list (vertical, newline separated)
+  herbs       table     herb rows in bags, A-Z by name (empty if no Herbalism)
+  ores        table     ore rows in bags, A-Z by name (empty if no Mining)
+  skins       table     same as leathers
+  leathers    table     raw leather/hide/scale rows, A-Z (empty if no Skinning)
+  items       table     herbs then ores then leathers, same row shape
+
+Price helpers (copper strings so aura math can tonumber them).
+No AH listing (or bad id) returns "-0" (tonumber is 0, not nil).
+1 silver = "100". 1 silver profit = "100". 1 silver loss = "-100".
+
+  AuctionworthyWA.itemahprice(itemID)
+      posting copper (Auctionator + undercut), e.g. "100"
+  AuctionworthyWA.itemprofit(itemID)
+      AH net (posting − 5% cut) minus vendor. Positive profit, negative loss.
+      Colon form AuctionworthyWA:itemahprice(itemID) is the same.
+
+Each row (bags, has an AH price):
+  id      number   item id
+  name    string
+  icon    number   texture file id (use |T<icon>:16:16|t)
+  count   number   bags only (not bank)
+  unit    number   posting copper per item (Auctionator + undercut)
+  total   number   AH stack copper (posting * count)
+  profit  number or nil   sold-listing profit when it beats vendor; nil on a loss
+  line    string   padded columns, money as "5g 4s 3c" (no coin textures)
+
+Same profit rule as tooltips: profit = posting − 5% AH cut. Deposit is not in profit.
+Profit in parentheses only when it beats vendor (Auction it!). Loss / vendor-better = AH only.
+
+text layout:
+  Herbs
+  <herb lines A-Z>
+
+  Ore
+  <ore lines A-Z>
+
+  Leathers
+  <leather lines A-Z>
+Empty groups are omitted. Cured hides and Enchanted Leather are not listed.
+Forever-only gather mats are included (Frilled Lichen, Rosecap, Stranglevine,
+Marefoil, Demonsage, Death Lotus; Pyrite, Bauxite, Pitchblende, Heavy Thorium Ore,
+Fel Crystal, Torbernite; Pristine Leather/Hide/Scale, Fel Leather, Fel Hide).
+Herb seeds and smelted bars are not listed.
+
+------------------------------------------------------------------------
+Example
+------------------------------------------------------------------------
+  Herbs
+  [icon] Briarthorn (17)      15s 81c (15s 2c)
+  [icon] Earthroot (4)         3s 12c (2s 97c)
+  [icon] Silverleaf (3)        8c
+
+Name column width is the longest "Name (count)" across Herbs, Ore, and Leathers so AH lines up in every group.
+Money is 5g 4s 3c (zero gold/silver omitted).
+
+  Ore
+  [copper icon] Copper Ore (40), 2g (1g 90s)
+
+  Leathers
+  [light leather icon] Light Leather (20), 40c (10c)
+
+Profit in the last parentheses only when posting beats vendor.
+Loss: icon Name (count), AH — no profit.
+
+------------------------------------------------------------------------
+Event (when text changes):
+  AUCTIONWORTHY_GATHER
+  arg1 = AuctionworthyWA.text
+Also refresh on PLAYER_ENTERING_WORLD, BAG_UPDATE_DELAYED, SKILL_LINES_CHANGED.
+
+------------------------------------------------------------------------
+Example (ForeverAuras / WeakAuras custom text)
+------------------------------------------------------------------------
+Trigger: custom, event
+Events: PLAYER_ENTERING_WORLD, BAG_UPDATE_DELAYED, SKILL_LINES_CHANGED, AUCTIONWORTHY_GATHER
+Hide: custom
+
+function()
+  return AuctionworthyWA and AuctionworthyWA.text ~= ""
+end
+
+Display %c, custom text (event):
+
+function()
+  return AuctionworthyWA and AuctionworthyWA.text or ""
+end
+
+Build your own lines from rows (still no pcall):
+
+function()
+  local wa = AuctionworthyWA
+  if not wa then
+    return ""
+  end
+  local out = {}
+  local function add(title, rows)
+    if not rows or #rows == 0 then
+      return
+    end
+    if #out > 0 then
+      out[#out + 1] = ""
+    end
+    out[#out + 1] = title
+    for i = 1, #rows do
+      out[#out + 1] = rows[i].line
+    end
+  end
+  add("Herbs", wa.herbs)
+  add("Ore", wa.ores)
+  add("Leathers", wa.leathers)
+  return table.concat(out, "\n")
+end
+
+Single item (still no pcall). Use the string; tonumber("-0") is 0:
+
+function()
+  local wa = AuctionworthyWA
+  if not wa or not wa.itemahprice then
+    return "-0"
+  end
+  local ah = wa.itemahprice(2447)
+  local profit = wa.itemprofit(2447)
+  return ah .. " " .. profit
+end
+
+------------------------------------------------------------------------
+Auctionworthy  (addon table, optional)
+------------------------------------------------------------------------
+Prefer AuctionworthyWA. These exist if you already check Auctionworthy:
+
+  Auctionworthy:GetAuctionPriceByItemID(itemID)
+      market copper per item, or nil
+  Auctionworthy:PostingPriceByItemID(itemID)
+      market after Auctionator undercut (same as tooltip posting)
+  Auctionworthy:FormatGold(copper)
+      coin texture string
+  Auctionworthy:FormatChatMoney(copper)
+      "1g 20s" style, no textures
+  Auctionworthy:VendorVerdict(auctionCopper, vendorCopper)
+      profit, deposit, beatsVendor (stack totals OK)
+  Auctionworthy:VendorBuyPriceByItemID(itemID)
+      unlimited vendor listing copper, or nil
+  Auctionworthy:CraftReagentCost(itemID, qty)
+      vendor unless vendor is > 5x AH, then AH; copper for qty
+  Auctionworthy:MaterialItemID(name)
+      item id from a reagent name, or nil
+  Auctionworthy:ScanBusy()
+      true while an Auctionator full scan is running (skip price spam)
+
+Do not use chat, whisper, crate-share, or tooltip methods from an aura.
