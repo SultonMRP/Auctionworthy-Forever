@@ -468,7 +468,21 @@ local function ShowAllProfessions()
 	return Auctionworthy and Auctionworthy.GetOption and Auctionworthy:GetOption("showAllGatherProfessions") and true or false
 end
 
+local snapshotDeferred = false
+
+local function InCombat()
+	return Auctionworthy and Auctionworthy.InCombat and Auctionworthy:InCombat()
+end
+
 local function Refresh()
+	if InCombat() then
+		snapshotDeferred = true
+		if Auctionworthy.UpdateGatherList then
+			Auctionworthy:UpdateGatherList()
+		end
+		return
+	end
+	snapshotDeferred = false
 	local herbalism, mining, skinning = PlayerHasGathering()
 	local showAll = ShowAllProfessions()
 	local herbs = (showAll or herbalism) and Collect(HERB_ITEMS) or {}
@@ -517,6 +531,10 @@ end
 
 local pending
 local function QueueRefresh()
+	if InCombat() then
+		snapshotDeferred = true
+		return
+	end
 	if pending then
 		return
 	end
@@ -534,7 +552,14 @@ frame:RegisterEvent("BAG_UPDATE_DELAYED")
 frame:RegisterEvent("BAG_UPDATE")
 frame:RegisterEvent("SKILL_LINES_CHANGED")
 frame:RegisterEvent("SPELLS_CHANGED")
+frame:RegisterEvent("PLAYER_REGEN_ENABLED")
 frame:SetScript("OnEvent", function(_, event)
+	if event == "PLAYER_REGEN_ENABLED" then
+		if snapshotDeferred then
+			Refresh()
+		end
+		return
+	end
 	if event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
 		Refresh()
 	else

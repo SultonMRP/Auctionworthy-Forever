@@ -12,19 +12,6 @@ local SECTIONS = {
 	{ key = "leathers", title = "Leathers", collapse = "collapseGatherLeathers", skill = "skinning" },
 }
 
-local COVERING = {
-	"QuestFrame", "GossipFrame", "QuestLogFrame", "QuestLogDetailFrame",
-	"MerchantFrame", "MailFrame", "BankFrame", "GuildBankFrame",
-	"SettingsPanel", "GameMenuFrame", "CharacterFrame",
-	"SpellBookFrame", "PlayerSpellsFrame", "PlayerTalentFrame", "TalentFrame",
-	"TaxiFrame", "ClassTrainerFrame", "TrainerFrame",
-	"AuctionHouseFrame", "AuctionFrame", "TradeFrame", "LootFrame",
-	"WorldMapFrame", "FriendsFrame", "CraftFrame", "TradeSkillFrame",
-	"InspectFrame", "CollectionsJournal", "PVEFrame",
-	"StaticPopup1", "StaticPopup2", "StaticPopup3", "StaticPopup4",
-}
-
-local hookedCover = {}
 local panel
 local headers = {}
 local lines = {}
@@ -88,44 +75,6 @@ local function KeepBehind()
 	panel:SetFrameLevel(1)
 	if panel.SetFixedFrameStrata then
 		pcall(panel.SetFixedFrameStrata, panel, true)
-	end
-end
-
-local function WindowInFront()
-	for i = 1, #COVERING do
-		local frame = _G[COVERING[i]]
-		if frame and frame.IsShown then
-			local ok, shown = pcall(frame.IsShown, frame)
-			if ok and shown then
-				return true
-			end
-		end
-	end
-	return false
-end
-
-local function WatchCovering()
-	if ListBlocked() then
-		return
-	end
-	for i = 1, #COVERING do
-		local name = COVERING[i]
-		if not hookedCover[name] then
-			local frame = _G[name]
-			if frame and frame.HookScript then
-				hookedCover[name] = true
-				frame:HookScript("OnShow", function()
-					if panel then
-						panel:Hide()
-					end
-				end)
-				frame:HookScript("OnHide", function()
-					if Auctionworthy.UpdateGatherList then
-						Auctionworthy:UpdateGatherList()
-					end
-				end)
-			end
-		end
 	end
 end
 
@@ -292,7 +241,11 @@ local function HideUnusedLines(from)
 end
 
 function Auctionworthy:UpdateGatherList()
-	if ListBlocked() then
+	if Auctionworthy.InCombat and Auctionworthy:InCombat() then
+		pendingUpdate = true
+		return
+	end
+	if Auctionworthy.PlayerDead and Auctionworthy:PlayerDead() then
 		pendingUpdate = true
 		return
 	end
@@ -305,12 +258,7 @@ function Auctionworthy:UpdateGatherList()
 	if not EnsurePanel() then
 		return
 	end
-	WatchCovering()
 	KeepBehind()
-	if WindowInFront() then
-		panel:Hide()
-		return
-	end
 	local wa = AuctionworthyWA
 	if type(wa) ~= "table" then
 		wa = {}
@@ -398,6 +346,7 @@ defer:RegisterEvent("PLAYER_DEAD")
 defer:SetScript("OnEvent", function(_, event)
 	if event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_DEAD" then
 		headerDrag = nil
+		pendingUpdate = true
 		if panel then
 			panel:StopMovingOrSizing()
 		end
@@ -410,7 +359,9 @@ defer:SetScript("OnEvent", function(_, event)
 		return
 	end
 	pendingUpdate = false
-	if Auctionworthy.UpdateGatherList then
+	if Auctionworthy.RefreshGatherSnapshot then
+		Auctionworthy:RefreshGatherSnapshot()
+	elseif Auctionworthy.UpdateGatherList then
 		Auctionworthy:UpdateGatherList()
 	end
 end)

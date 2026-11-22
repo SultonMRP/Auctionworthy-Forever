@@ -2,7 +2,7 @@
 ## Title: Auctionworthy-Forever
 ## Notes: Tooltip profit vs vendor using Auctionator prices. /auctionworthy or /worthy
 ## Author: spzilyk
-## Version: 1.1.122
+## Version: 1.1.123
 ## OptionalDeps: Auctionator, Prat-3.0, BagBrother, Bagnon, Bagnonium, Baganator, MyBags, LibStub, CallbackHandler-1.0, LibDataBroker-1.1, LibDBIcon-1.0, LibSharedMedia-3.0
 ## SavedVariables: AuctionworthySavedOptions, AuctionworthyFillIDs, AuctionworthyCrateFills, AuctionworthyAtlasNames, AuctionworthyDebug
 ## IconTexture: Interface\Icons\INV_Misc_Coin_01
