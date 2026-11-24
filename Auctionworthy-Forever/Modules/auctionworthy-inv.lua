@@ -249,6 +249,38 @@ local function ButtonLink(button)
 	return ContainerLink(bag, slot)
 end
 
+local function CharacterSlotButton(button)
+	local frame = button
+	for _ = 1, 10 do
+		if not frame then
+			return false
+		end
+		local name = frame.GetName and frame:GetName()
+		if type(name) == "string" and not Auctionworthy:Secret(name) then
+			if name:find("PaperDoll", 1, true) or name:find("EquipmentFlyout", 1, true) then
+				return true
+			end
+			if name:find("Inspect", 1, true) and name:find("Slot", 1, true) then
+				return true
+			end
+			if name:find("^Character") and name:find("Slot", 1, true) then
+				return true
+			end
+		end
+		if frame == PaperDollFrame or frame == InspectFrame or frame == InspectPaperDollFrame then
+			return true
+		end
+		if frame == EquipmentFlyoutFrame then
+			return true
+		end
+		if not frame.GetParent then
+			return false
+		end
+		frame = frame:GetParent()
+	end
+	return false
+end
+
 local function MerchantOrBuybackButton(button)
 	local frame = button
 	for _ = 1, 10 do
@@ -276,7 +308,7 @@ local function BagOrBankButton(button)
 	if not button then
 		return false
 	end
-	if MerchantOrBuybackButton(button) then
+	if MerchantOrBuybackButton(button) or CharacterSlotButton(button) then
 		return false
 	end
 	if button.hasItem then
@@ -347,7 +379,7 @@ local function ButtonIsBound(button)
 end
 
 local function Paint(button)
-	if MerchantOrBuybackButton(button) then
+	if MerchantOrBuybackButton(button) or CharacterSlotButton(button) then
 		HideTag(button)
 		return
 	end
